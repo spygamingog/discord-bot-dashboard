@@ -201,13 +201,17 @@ export default function Dashboard() {
     training_enabled: false,
     rag_threshold: 0.65,
     system_prompt:
-      'You are the official SpyGaming AI Assistant, dedicated to the SpyGaming community, its Minecraft servers, and its ecosystem of custom plugins and projects (including SpyCore, SpyHunts, SpyInventories, SpyNetherPortals, SpySpectator, and SpyHunt-Compass).\n\n' +
-      'Your primary roles:\n' +
-      '1. Minecraft & Server Support: Assist players with gameplay mechanics, server rules, connectivity, client/modpack troubleshooting, and general Minecraft questions.\n' +
-      '2. Command & Plugin Guide: When players ask how to perform actions or what command to use in SpyCore, SpyHunts, or other server projects, provide the exact in-game command syntax with clear parameter explanations (e.g., `/command <arg>`).\n' +
-      '3. Documentation Grounding: Always prioritize verified knowledge base and plugin documentation provided in your context. If documentation specifies commands, permissions, or configuration keys, provide them accurately.\n' +
-      '4. Tone & Style: Be friendly, direct, concise, and gamer-oriented. Use clean Discord Markdown with backticks for commands (`/command`) and code blocks for configs. Avoid unnecessary filler.\n' +
-      '5. Missing Info: If a requested command or feature is not in the documentation, state what is known honestly and recommend checking /help in-game or contacting server staff.',
+      'You are the official SpyGaming AI Assistant for the SpyGaming community, its Minecraft servers, and its custom plugins (including SpyCore, SpyHunts, SpyInventories, SpyNetherPortals, SpySpectator, and SpyHunt-Compass).\n\n' +
+      'Core Behavior & Persona:\n' +
+      '1. Language Mirroring (Universal & Hinglish): ALWAYS detect and reply in the EXACT language, tone, and script the user used.\n' +
+      '   - If the user asks in Hinglish (e.g. "Bhai arena kaise banaye", "lag fix kaise kare", "mera portal work nahi kar raha"), reply naturally in friendly, conversational Hinglish!\n' +
+      '   - If they ask in Hindi (Devanagari), reply in Hindi.\n' +
+      '   - If they ask in English, reply in English.\n' +
+      '   - Seamlessly match whatever language or mix the player uses, like ChatGPT.\n' +
+      '2. Super Simple & User-Friendly: Explain everything in an ultra-simple, clear, and friendly gamer tone. Avoid overly complex or rigid academic jargon. Break down commands and solutions into easy step-by-step numbered points so any player can do it instantly.\n' +
+      '3. Command & Plugin Guide: When players ask how to do something in SpyCore, SpyHunts, or other server projects, give the exact in-game command syntax with backticks (e.g., `/command <arg>`) and a super simple explanation of what each parameter does.\n' +
+      '4. Grounded in Documentation: Prioritize verified documentation chunks in your context for exact commands, permissions, or config keys.\n' +
+      '5. Missing Information: If a feature is not documented, be honest and helpful: state what you do know, and suggest checking `/help` in-game or opening a ticket with server staff.',
   });
 
   // UI States
@@ -231,6 +235,8 @@ export default function Dashboard() {
   const [ghScanning, setGhScanning] = useState(false);
   const [scannedRepos, setScannedRepos] = useState<ScannedRepo[]>([]);
   const [ingestingRepoName, setIngestingRepoName] = useState<string | null>(null);
+  const [confirmPurgeProject, setConfirmPurgeProject] = useState<string | null>(null);
+  const [isPurgingProject, setIsPurgingProject] = useState<string | null>(null);
 
   // Knowledge Base Editor Drawer
   const [searchChunkQuery, setSearchChunkQuery] = useState('');
@@ -451,10 +457,18 @@ export default function Dashboard() {
     }
   };
 
-  // Purge entire project from memory
+  // Purge entire project from memory (2-step non-blocking inline confirmation)
   const handlePurgeProject = async (projectName: string) => {
-    if (!confirm(`Are you sure you want to purge all memory vectors for "${projectName}"?`)) return;
+    if (confirmPurgeProject !== projectName) {
+      setConfirmPurgeProject(projectName);
+      setTimeout(() => {
+        setConfirmPurgeProject((prev) => (prev === projectName ? null : prev));
+      }, 5000);
+      return;
+    }
 
+    setIsPurgingProject(projectName);
+    setConfirmPurgeProject(null);
     try {
       const res = await fetch(`/api/ingest?project=${encodeURIComponent(projectName)}`, {
         method: 'DELETE',
@@ -469,6 +483,8 @@ export default function Dashboard() {
       }
     } catch {
       showToast('Failed to purge project', 'err');
+    } finally {
+      setIsPurgingProject(null);
     }
   };
 
@@ -1089,10 +1105,29 @@ export default function Dashboard() {
                           </span>
                           <button
                             onClick={() => handlePurgeProject(p.name)}
-                            className="px-2 py-1 rounded text-[11px] bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 border border-rose-500/20 transition flex items-center gap-1"
+                            disabled={isPurgingProject === p.name}
+                            className={`px-2 py-1 rounded text-[11px] transition flex items-center gap-1 font-mono ${
+                              confirmPurgeProject === p.name
+                                ? 'bg-rose-600 hover:bg-rose-700 text-white font-bold animate-pulse'
+                                : 'bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 border border-rose-500/20'
+                            }`}
                           >
-                            <Trash2 className="w-3 h-3" />
-                            <span>Purge Memory</span>
+                            {isPurgingProject === p.name ? (
+                              <>
+                                <Loader2 className="w-3 h-3 animate-spin" />
+                                <span>Purging...</span>
+                              </>
+                            ) : confirmPurgeProject === p.name ? (
+                              <>
+                                <AlertTriangle className="w-3 h-3" />
+                                <span>Confirm Delete?</span>
+                              </>
+                            ) : (
+                              <>
+                                <Trash2 className="w-3 h-3" />
+                                <span>Purge Memory</span>
+                              </>
+                            )}
                           </button>
                         </div>
                       </div>
@@ -1284,9 +1319,26 @@ export default function Dashboard() {
                             {inMemory ? (
                               <button
                                 onClick={() => handlePurgeProject(repo.full_name.toLowerCase())}
-                                className="px-2.5 py-1 rounded text-[10px] bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 border border-rose-500/20 transition"
+                                disabled={isPurgingProject === repo.full_name.toLowerCase()}
+                                className={`px-2.5 py-1 rounded text-[10px] transition flex items-center gap-1 font-mono ${
+                                  confirmPurgeProject === repo.full_name.toLowerCase()
+                                    ? 'bg-rose-600 hover:bg-rose-700 text-white font-bold animate-pulse'
+                                    : 'bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 border border-rose-500/20'
+                                }`}
                               >
-                                Remove from Memory
+                                {isPurgingProject === repo.full_name.toLowerCase() ? (
+                                  <>
+                                    <Loader2 className="w-3 h-3 animate-spin" />
+                                    <span>Purging...</span>
+                                  </>
+                                ) : confirmPurgeProject === repo.full_name.toLowerCase() ? (
+                                  <>
+                                    <AlertTriangle className="w-3 h-3" />
+                                    <span>Confirm?</span>
+                                  </>
+                                ) : (
+                                  <span>Remove from Memory</span>
+                                )}
                               </button>
                             ) : (
                               <button
@@ -1858,28 +1910,28 @@ export default function Dashboard() {
                   </span>
                 </div>
 
-                <div className="flex gap-2 pt-1">
+                <div className="flex flex-wrap gap-2 pt-1">
                   {[
                     {
-                      name: 'Minecraft & SpyCore Expert',
+                      name: 'Multilingual & Hinglish Friendly (Recommended)',
                       prompt:
-                        'You are the official SpyGaming AI Assistant, dedicated to the SpyGaming community, its Minecraft servers, and its ecosystem of custom plugins and projects (including SpyCore, SpyHunts, SpyInventories, SpyNetherPortals, SpySpectator, and SpyHunt-Compass).\n\n' +
-                        'Primary roles:\n' +
-                        '1. Minecraft & Server Support: Assist players with gameplay mechanics, server rules, connectivity, client/modpack troubleshooting, and general Minecraft questions.\n' +
-                        '2. Command & Plugin Guide: When players ask how to perform actions or what command to use in SpyCore, SpyHunts, or other server projects, provide the exact in-game command syntax with clear parameter explanations (e.g., `/command <arg>`).\n' +
-                        '3. Documentation Grounding: Always prioritize verified knowledge base and plugin documentation provided in your context. If documentation specifies commands, permissions, or configuration keys, provide them accurately.\n' +
-                        '4. Tone & Style: Be friendly, direct, concise, and gamer-oriented. Use clean Discord Markdown with backticks for commands (`/command`) and code blocks for configs. Avoid unnecessary filler.\n' +
-                        '5. Missing Info: If a requested command or feature is not in the documentation, state what is known honestly and recommend checking /help in-game or contacting server staff.',
+                        'You are the official SpyGaming AI Assistant for the SpyGaming community, its Minecraft servers, and its custom plugins (including SpyCore, SpyHunts, SpyInventories, SpyNetherPortals, SpySpectator, and SpyHunt-Compass).\n\n' +
+                        'Core Behavior & Persona:\n' +
+                        '1. Language Mirroring (Universal & Hinglish): ALWAYS detect and reply in the EXACT language, tone, and script the user used. If the user asks in Hinglish (e.g. "Bhai arena kaise banaye", "lag fix kaise kare", "mera portal work nahi kar raha"), reply naturally in friendly, conversational Hinglish! If they ask in Hindi, reply in Hindi. If in English, reply in English. Seamlessly match whatever language or mix the player uses, like ChatGPT.\n' +
+                        '2. Super Simple & User-Friendly: Explain everything in an ultra-simple, clear, and friendly gamer tone. Avoid complex or rigid academic jargon. Break down commands and solutions into easy step-by-step numbered points so any player can do it instantly.\n' +
+                        '3. Command & Plugin Guide: When players ask how to do something in SpyCore, SpyHunts, or other server projects, give the exact in-game command syntax with backticks (e.g., `/command <arg>`) and a super simple explanation of what each parameter does.\n' +
+                        '4. Grounded in Documentation: Prioritize verified documentation chunks in your context for exact commands, permissions, or config keys.\n' +
+                        '5. Missing Information: If a feature is not documented, be honest and helpful: state what you do know, and suggest checking `/help` in-game or opening a ticket with server staff.',
                     },
                     {
-                      name: 'Command Lookup Mode',
+                      name: 'Fast Command Guide',
                       prompt:
-                        'You are a fast command reference assistant for SpyGaming Minecraft projects. When a user asks how to do something in SpyCore or other server plugins, immediately reply with the exact in-game command syntax, required permissions, and a concise 1-sentence explanation.',
+                        'You are a quick command assistant for SpyGaming Minecraft plugins. When a user asks how to do something, reply immediately in their language (English or Hinglish) with the exact in-game command syntax in backticks, required permissions, and a super simple 1-sentence explanation.',
                     },
                     {
                       name: 'Server Troubleshooting Lead',
                       prompt:
-                        'You are a technical Minecraft server troubleshooter for SpyGaming. Diagnose player issues (connection drops, lag, portal link problems, inventory sync errors) with clear step-by-step numbered diagnostic actions.',
+                        'You are a friendly Minecraft server troubleshooter for SpyGaming. Diagnose player issues (connection drops, lag, portal links, inventory sync) using simple numbered steps in the user\'s language.',
                     },
                   ].map((p) => (
                     <button

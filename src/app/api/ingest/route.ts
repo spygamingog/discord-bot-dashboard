@@ -424,7 +424,7 @@ export async function DELETE(req: NextRequest) {
     const { error } = await supabase
       .from('knowledge_chunks')
       .delete()
-      .eq('project_name', project);
+      .ilike('project_name', project);
 
     if (error) throw error;
 
