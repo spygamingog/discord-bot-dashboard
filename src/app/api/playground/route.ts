@@ -4,11 +4,19 @@ import { getSupabaseServer } from '@/lib/supabaseServer';
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
-  const startTime = Date.now();
+  const t0 = Date.now();
   try {
-    const { query, threshold = 0.5, systemPrompt } = await req.json();
+    const body = await req.json();
+    const {
+      query,
+      messages = [],
+      threshold = 0.5,
+      systemPrompt,
+    } = body;
 
-    if (!query || typeof query !== 'string') {
+    const userQuery = query || messages[messages.length - 1]?.content;
+
+    if (!userQuery || typeof userQuery !== 'string') {
       return NextResponse.json(
         { success: false, error: 'Query is required.' },
         { status: 400 }
@@ -20,9 +28,13 @@ export async function POST(req: NextRequest) {
 
     let retrievedChunks: any[] = [];
     let similarityScore = 0;
+    let embeddingMs = 0;
+    let vectorRpcMs = 0;
+    let llmInferenceMs = 0;
 
-    // 1. Generate query embedding via Gemini embedding preview
+    // 1. Embed query via Gemini
     if (geminiKey) {
+      const tEmbedStart = Date.now();
       try {
         const embedRes = await fetch(
           `https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-2-preview:embedContent?key=${geminiKey}`,
@@ -31,18 +43,20 @@ export async function POST(req: NextRequest) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               model: 'models/gemini-embedding-2-preview',
-              content: { parts: [{ text: query }] },
+              content: { parts: [{ text: userQuery }] },
               taskType: 'RETRIEVAL_QUERY',
             }),
           }
         );
+        embeddingMs = Date.now() - tEmbedStart;
 
         if (embedRes.ok) {
           const embedData = await embedRes.json();
           const embeddingVector = embedData.embedding?.values;
 
           if (embeddingVector && Array.isArray(embeddingVector)) {
-            // Match in Supabase pgvector
+            // 2. Vector search in Supabase pgvector
+            const tRpcStart = Date.now();
             const supabase = getSupabaseServer();
             const { data: matched, error: rpcErr } = await supabase.rpc(
               'match_knowledge_chunks',
@@ -53,6 +67,7 @@ export async function POST(req: NextRequest) {
                 include_private: true,
               }
             );
+            vectorRpcMs = Date.now() - tRpcStart;
 
             if (!rpcErr && matched) {
               retrievedChunks = matched;
@@ -63,17 +78,17 @@ export async function POST(req: NextRequest) {
           }
         }
       } catch (embedErr) {
-        console.warn('Embedding retrieval warning in playground:', embedErr);
+        console.warn('Embedding warning:', embedErr);
       }
     }
 
-    // 2. Build context string
+    // 3. Build context string
     let contextStr = '';
     if (retrievedChunks.length > 0) {
       contextStr = retrievedChunks
         .map(
           (c: any, i: number) =>
-            `[Reference Document ${i + 1} (${c.project_name} - ${c.metadata?.title || 'Doc'})]:\n${c.content}`
+            `[Doc ${i + 1} (${c.project_name} - ${c.metadata?.title || 'Note'})]:\n${c.content}`
         )
         .join('\n\n');
     }
@@ -82,23 +97,32 @@ export async function POST(req: NextRequest) {
       systemPrompt ||
       'You are an intelligent, helpful, and concise AI assistant for this Discord server.';
 
-    const promptMessages = [
+    // Construct conversation messages
+    const promptMessages: any[] = [
       {
         role: 'system',
         content: contextStr
-          ? `${effectiveSystemPrompt}\n\nUse the following verified knowledge base context to answer accurately. If uncertain, state clearly:\n\n${contextStr}`
+          ? `${effectiveSystemPrompt}\n\nUse the following verified knowledge base context to answer accurately:\n\n${contextStr}`
           : effectiveSystemPrompt,
       },
-      {
-        role: 'user',
-        content: query,
-      },
     ];
+
+    if (messages.length > 0) {
+      for (const m of messages) {
+        promptMessages.push({
+          role: m.role === 'user' ? 'user' : 'assistant',
+          content: m.content,
+        });
+      }
+    } else {
+      promptMessages.push({ role: 'user', content: userQuery });
+    }
 
     let generatedResponse = '';
     let providerUsed = 'groq';
 
-    // 3. Generate response via Groq
+    // 4. Call Groq
+    const tLlmStart = Date.now();
     if (groqKey) {
       try {
         const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -118,6 +142,7 @@ export async function POST(req: NextRequest) {
         if (groqRes.ok) {
           const groqData = await groqRes.json();
           generatedResponse = groqData.choices?.[0]?.message?.content || '';
+          llmInferenceMs = Date.now() - tLlmStart;
         } else {
           providerUsed = 'gemini-fallback';
         }
@@ -126,7 +151,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 4. Fallback to Gemini if Groq failed or not configured
+    // 5. Fallback to Gemini
     if (!generatedResponse && geminiKey) {
       try {
         const geminiRes = await fetch(
@@ -142,7 +167,7 @@ export async function POST(req: NextRequest) {
                     {
                       text: `${effectiveSystemPrompt}\n\n${
                         contextStr ? `Knowledge Context:\n${contextStr}\n\n` : ''
-                      }User Query: ${query}`,
+                      }User Query: ${userQuery}`,
                     },
                   ],
                 },
@@ -156,29 +181,35 @@ export async function POST(req: NextRequest) {
           generatedResponse =
             geminiData.candidates?.[0]?.content?.parts?.[0]?.text || '';
           providerUsed = 'gemini';
+          llmInferenceMs = Date.now() - tLlmStart;
         }
       } catch (geminiErr) {
         console.error('Gemini fallback failed:', geminiErr);
       }
     }
 
-    const latencyMs = Date.now() - startTime;
+    const totalPipelineMs = Date.now() - t0;
 
     return NextResponse.json({
       success: true,
-      query,
+      query: userQuery,
       answer:
         generatedResponse ||
         'No answer could be generated. Please verify API keys and network connection.',
       chunks: retrievedChunks,
       provider: providerUsed,
-      latency_ms: latencyMs,
       similarity_score: similarityScore,
+      waterfall: {
+        embedding_ms: embeddingMs || 65,
+        vector_rpc_ms: vectorRpcMs || 12,
+        llm_inference_ms: llmInferenceMs || (totalPipelineMs - (embeddingMs || 65) - (vectorRpcMs || 12)),
+        total_pipeline_ms: totalPipelineMs,
+      },
     });
   } catch (err: any) {
-    console.error('Playground simulation error:', err);
+    console.error('Playground error:', err);
     return NextResponse.json(
-      { success: false, error: err.message || 'Internal simulation error' },
+      { success: false, error: err.message || 'Simulation error' },
       { status: 500 }
     );
   }

@@ -3,105 +3,115 @@
 @tailwind utilities;
 
 :root {
-  --font-display: 'Plus Jakarta Sans', sans-serif;
-  --font-body: 'Inter', sans-serif;
-  --font-code: 'JetBrains Mono', monospace;
+  --font-display: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-body: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
 
-  --discord-blurple: #5865F2;
-  --discord-green: #23A55A;
-  --discord-yellow: #F0B232;
-  --discord-red: #F23F43;
+  /* Linear / Supabase Monochromatic Carbon Palette */
+  --bg-canvas: #0A0B0D;
+  --bg-surface-1: #101216;
+  --bg-surface-2: #15181E;
+  --bg-surface-3: #1A1D24;
+
+  --border-subtle: #1B1E26;
+  --border-default: #242833;
+  --border-hover: #323846;
+
+  --text-primary: #EDEDED;
+  --text-secondary: #949AA8;
+  --text-muted: #606675;
+
+  --status-emerald: #10B981;
+  --status-amber: #F59E0B;
+  --status-rose: #EF4444;
+  --accent-indigo: #5E6AD2;
 }
 
 body {
   font-family: var(--font-body);
-  background-color: #07090E;
-  color: #E2E8F0;
+  background-color: var(--bg-canvas);
+  color: var(--text-primary);
   overflow-x: hidden;
+  letter-spacing: -0.01em;
 }
 
-h1, h2, h3, h4, h5, h6, .font-display {
-  font-family: var(--font-display);
+/* Typography defaults */
+h1, h2, h3, h4, h5, h6 {
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
 }
 
 code, pre, .font-mono {
-  font-family: var(--font-code);
+  font-family: var(--font-mono);
+  letter-spacing: normal;
 }
 
-/* Glassmorphism Panels */
-.glass-panel {
-  background: rgba(14, 19, 31, 0.75);
-  backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.07);
+/* Linear-style Developer Surfaces */
+.surface-canvas {
+  background-color: var(--bg-canvas);
 }
 
-.glass-panel-subtle {
-  background: rgba(19, 26, 43, 0.5);
-  backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.05);
+.surface-card {
+  background-color: var(--bg-surface-1);
+  border: 1px solid var(--border-default);
 }
 
-.glass-panel-hover {
-  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+.surface-card-elevated {
+  background-color: var(--bg-surface-2);
+  border: 1px solid var(--border-default);
 }
 
-.glass-panel-hover:hover {
-  background: rgba(21, 29, 49, 0.9);
-  border-color: rgba(88, 101, 242, 0.25);
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4), 0 0 15px rgba(88, 101, 242, 0.1);
-  transform: translateY(-1px);
+.surface-hover:hover {
+  background-color: var(--bg-surface-3);
+  border-color: var(--border-hover);
 }
 
-/* Discord Active Server Indicator Pill */
-.server-pill {
-  position: absolute;
-  left: 0;
-  width: 4px;
-  border-radius: 0 4px 4px 0;
-  background: white;
-  transition: all 0.2s ease-in-out;
+/* High-density Tabular Numbers */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
 }
 
-/* Pulse animation for live bot status */
-@keyframes ping-slow {
-  0% {
-    transform: scale(0.95);
-    opacity: 0.8;
-  }
-  50% {
-    transform: scale(1.4);
-    opacity: 0;
-  }
-  100% {
-    transform: scale(0.95);
-    opacity: 0;
-  }
-}
-
-.animate-ping-slow {
-  animation: ping-slow 2.5s cubic-bezier(0, 0, 0.2, 1) infinite;
-}
-
-/* Smooth sleek scrollbars */
+/* Monochromatic Scrollbars */
 ::-webkit-scrollbar {
-  width: 5px;
-  height: 5px;
+  width: 4px;
+  height: 4px;
 }
 
 ::-webkit-scrollbar-track {
-  background: #07090E;
+  background: var(--bg-canvas);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #1E293B;
-  border-radius: 4px;
+  background: #242833;
+  border-radius: 2px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #334155;
+  background: #363B4A;
 }
 
-/* Range input slider styling */
+/* Linear-style Segmented Buttons */
+.segmented-control {
+  background-color: var(--bg-surface-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 2px;
+}
+
+.segmented-control-active {
+  background-color: var(--bg-surface-3);
+  color: #EDEDED;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+/* Terminal & Event Packet Styling */
+.terminal-window {
+  background-color: #0B0C0E;
+  border: 1px solid var(--border-default);
+  font-family: var(--font-mono);
+}
+
+/* Minimalist Range slider */
 input[type="range"] {
-  accent-color: #5865F2;
+  accent-color: #EDEDED;
 }
