@@ -27,6 +27,7 @@ import {
   HelpCircle,
   History,
   Layers,
+  Loader2,
   Lock,
   MessageSquare,
   Network,
@@ -99,6 +100,8 @@ interface ScannedRepo {
   description: string;
   stars: number;
   updated_at: string;
+  is_private?: boolean;
+  owner?: string;
 }
 
 interface GuildSettings {
@@ -223,6 +226,8 @@ export default function Dashboard() {
 
   // GitHub Account Scanner
   const [ghUsername, setGhUsername] = useState('SpyGamingOG');
+  const [ghToken, setGhToken] = useState('');
+  const [showTokenInput, setShowTokenInput] = useState(false);
   const [ghScanning, setGhScanning] = useState(false);
   const [scannedRepos, setScannedRepos] = useState<ScannedRepo[]>([]);
   const [ingestingRepoName, setIngestingRepoName] = useState<string | null>(null);
@@ -257,8 +262,13 @@ export default function Dashboard() {
     setTimeout(() => setToastMessage(null), 3500);
   };
 
-  // Keyboard shortcut listener for tabs 1-6
+  // Keyboard shortcut listener for tabs 1-6 & load saved token
   useEffect(() => {
+    try {
+      const savedToken = localStorage.getItem('spygaming_gh_token');
+      if (savedToken) setGhToken(savedToken);
+    } catch {}
+
     const handleKeyDown = (e: KeyboardEvent) => {
       if (
         e.target instanceof HTMLInputElement ||
@@ -378,19 +388,31 @@ export default function Dashboard() {
     }
   };
 
-  // Scan GitHub User Repositories
+  // Scan GitHub User or Organization Repositories
   const handleScanGitHub = async () => {
-    if (!ghUsername.trim()) return;
     setGhScanning(true);
     try {
-      const res = await fetch(
-        `/api/ingest?action=list_github_repos&username=${encodeURIComponent(ghUsername.trim())}`
-      );
+      const params = new URLSearchParams();
+      params.set('action', 'list_github_repos');
+      if (ghUsername.trim()) {
+        params.set('username', ghUsername.trim());
+      } else if (ghToken.trim()) {
+        params.set('username', 'me');
+      } else {
+        showToast('Please enter a GitHub username or Organization', 'err');
+        setGhScanning(false);
+        return;
+      }
+      if (ghToken.trim()) {
+        params.set('token', ghToken.trim());
+      }
+
+      const res = await fetch(`/api/ingest?${params.toString()}`);
       const data = await res.json();
 
       if (data.success) {
         setScannedRepos(data.repositories || []);
-        showToast(`Found ${data.repositories?.length || 0} repositories for ${ghUsername}`);
+        showToast(`Found ${data.repositories?.length || 0} repositories`);
       } else {
         showToast(data.error || 'Failed to fetch repositories', 'err');
       }
@@ -401,8 +423,8 @@ export default function Dashboard() {
     }
   };
 
-  // Ingest Scanned Repo
-  const handleIngestScannedRepo = async (fullName: string) => {
+  // Ingest Scanned Repo (Public or Private)
+  const handleIngestScannedRepo = async (fullName: string, isPrivate: boolean = false) => {
     setIngestingRepoName(fullName);
     try {
       const res = await fetch('/api/ingest', {
@@ -410,7 +432,8 @@ export default function Dashboard() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           url: `https://github.com/${fullName}`,
-          is_private: false,
+          is_private: isPrivate,
+          github_token: ghToken.trim() || undefined,
         }),
       });
       const data = await res.json();
@@ -1130,37 +1153,93 @@ export default function Dashboard() {
                 </form>
               </div>
 
-              {/* SECTION C: GITHUB ACCOUNT PROJECT SCANNER */}
+              {/* SECTION C: GITHUB ACCOUNT & ORG PROJECT SCANNER */}
               <div className="p-5 rounded-lg bg-[#101216] border border-[#1B1E26] space-y-4">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div>
-                    <h3 className="text-sm font-semibold text-white">Scan GitHub Profile Repositories</h3>
+                    <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+                      <Github className="w-4 h-4 text-white" />
+                      <span>GitHub Projects Scanner (User & Organization)</span>
+                    </h3>
                     <p className="text-xs text-[#949AA8]">
-                      Scan all your repositories and select exactly which projects to keep in bot memory.
+                      Scan all your repositories, including organizations and private projects, to index them into vector memory.
                     </p>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowTokenInput(!showTokenInput)}
+                      className={`px-2.5 py-1.5 rounded text-xs font-mono border transition flex items-center gap-1.5 ${
+                        ghToken
+                          ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+                          : 'bg-[#1C2028] text-[#949AA8] border-[#2E3340] hover:text-white'
+                      }`}
+                      title="Add GitHub Personal Access Token for private repos and organization access"
+                    >
+                      <Lock className="w-3 h-3" />
+                      <span>{ghToken ? 'Token Active' : '+ Auth Key / PAT'}</span>
+                    </button>
                     <input
                       type="text"
                       value={ghUsername}
                       onChange={(e) => setGhUsername(e.target.value)}
-                      placeholder="GitHub username..."
-                      className="px-3 py-1.5 rounded bg-[#0A0B0D] border border-[#1B1E26] text-xs text-white font-mono placeholder-[#606675] focus:outline-none focus:border-[#323846]"
+                      placeholder="Username or Org..."
+                      className="px-3 py-1.5 rounded bg-[#0A0B0D] border border-[#1B1E26] text-xs text-white font-mono placeholder-[#606675] focus:outline-none focus:border-[#323846] w-44 sm:w-56"
                     />
                     <button
                       onClick={handleScanGitHub}
-                      disabled={ghScanning || !ghUsername.trim()}
-                      className="px-3 py-1.5 rounded bg-[#1C2028] hover:bg-[#252B38] text-white font-mono text-xs border border-[#2E3340] transition flex items-center gap-1.5"
+                      disabled={ghScanning}
+                      className="px-3 py-1.5 rounded bg-[#EDEDED] hover:bg-white text-black font-semibold font-mono text-xs transition flex items-center gap-1.5"
                     >
                       {ghScanning ? (
                         <RefreshCw className="w-3.5 h-3.5 animate-spin" />
                       ) : (
-                        <Github className="w-3.5 h-3.5" />
+                        <Search className="w-3.5 h-3.5" />
                       )}
                       <span>Scan Projects</span>
                     </button>
                   </div>
                 </div>
+
+                {/* Token Input Drawer */}
+                {showTokenInput && (
+                  <div className="p-3 rounded bg-[#0A0B0D] border border-[#1B1E26] flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs">
+                    <div className="space-y-0.5">
+                      <div className="flex items-center gap-1.5 text-white font-medium">
+                        <Lock className="w-3.5 h-3.5 text-amber-400" />
+                        <span>GitHub Personal Access Token (PAT)</span>
+                      </div>
+                      <p className="text-[11px] text-[#949AA8]">
+                        Unlocks <strong>private repositories</strong>, <strong>organization projects</strong>, and 5,000 API requests/hr.
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2 w-full sm:w-auto">
+                      <input
+                        type="password"
+                        value={ghToken}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setGhToken(val);
+                          if (val) localStorage.setItem('spygaming_gh_token', val);
+                          else localStorage.removeItem('spygaming_gh_token');
+                        }}
+                        placeholder="ghp_... (Classic PAT with repo scope)"
+                        className="px-3 py-1.5 rounded bg-[#101216] border border-[#2E3340] text-xs text-white font-mono placeholder-[#606675] focus:outline-none focus:border-amber-400/50 w-full sm:w-72"
+                      />
+                      {ghToken && (
+                        <button
+                          onClick={() => {
+                            setGhToken('');
+                            localStorage.removeItem('spygaming_gh_token');
+                          }}
+                          className="px-2 py-1 text-xs text-[#606675] hover:text-rose-400 transition"
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
 
                 {scannedRepos.length > 0 && (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2 font-mono text-xs">
@@ -1174,16 +1253,23 @@ export default function Dashboard() {
                           className="p-3.5 rounded bg-[#0A0B0D] border border-[#1B1E26] space-y-2 flex flex-col justify-between"
                         >
                           <div>
-                            <div className="flex items-center justify-between">
-                              <span className="font-bold text-white truncate max-w-[240px]">
-                                {repo.name}
-                              </span>
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <span className="font-bold text-white truncate">
+                                  {repo.name}
+                                </span>
+                                {repo.is_private && (
+                                  <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20 flex items-center gap-0.5">
+                                    <Lock className="w-2.5 h-2.5" /> Private
+                                  </span>
+                                )}
+                              </div>
                               {inMemory ? (
-                                <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                                <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shrink-0">
                                   ● In Memory
                                 </span>
                               ) : (
-                                <span className="text-[10px] text-[#606675]">Not Ingested</span>
+                                <span className="text-[10px] text-[#606675] shrink-0">Not Ingested</span>
                               )}
                             </div>
                             <p className="text-[11px] text-[#949AA8] mt-1 line-clamp-2 leading-relaxed">
@@ -1204,11 +1290,18 @@ export default function Dashboard() {
                               </button>
                             ) : (
                               <button
-                                onClick={() => handleIngestScannedRepo(repo.full_name)}
+                                onClick={() => handleIngestScannedRepo(repo.full_name, Boolean(repo.is_private))}
                                 disabled={isIngesting}
-                                className="px-2.5 py-1 rounded text-[10px] bg-[#EDEDED] hover:bg-white text-black font-semibold transition"
+                                className="px-2.5 py-1 rounded text-[10px] bg-[#EDEDED] hover:bg-white text-black font-semibold transition disabled:opacity-60 flex items-center gap-1.5"
                               >
-                                {isIngesting ? 'Ingesting...' : '+ Add to Memory'}
+                                {isIngesting ? (
+                                  <>
+                                    <Loader2 className="w-3 h-3 animate-spin" />
+                                    Ingesting...
+                                  </>
+                                ) : (
+                                  '+ Add to Memory'
+                                )}
                               </button>
                             )}
                           </div>

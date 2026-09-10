@@ -6,7 +6,10 @@ export const dynamic = 'force-dynamic';
 // Helper to generate 768-dim vector using Gemini
 async function getDocumentEmbedding(text: string): Promise<number[] | null> {
   const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return null;
+  if (!apiKey) {
+    console.error('GEMINI_API_KEY is not set in environment!');
+    return null;
+  }
 
   try {
     const res = await fetch(
@@ -18,13 +21,19 @@ async function getDocumentEmbedding(text: string): Promise<number[] | null> {
           model: 'models/gemini-embedding-2-preview',
           content: { parts: [{ text }] },
           taskType: 'RETRIEVAL_DOCUMENT',
+          outputDimensionality: 768,
         }),
       }
     );
-    if (!res.ok) return null;
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error('Gemini embedContent error:', res.status, errText);
+      return null;
+    }
     const data = await res.json();
     return data.embedding?.values || null;
-  } catch {
+  } catch (err) {
+    console.error('Gemini embed exception:', err);
     return null;
   }
 }
@@ -94,34 +103,63 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    // Action 2: List public GitHub repositories for a given username
+    // Action 2: List GitHub repositories (User, Organization, or Authenticated Account)
     if (action === 'list_github_repos') {
-      const username = searchParams.get('username');
-      if (!username) {
+      const username = searchParams.get('username')?.trim();
+      const token =
+        searchParams.get('token')?.trim() ||
+        req.headers.get('authorization')?.replace(/^bearer\s+/i, '') ||
+        process.env.GITHUB_TOKEN;
+
+      const headers: Record<string, string> = {
+        Accept: 'application/vnd.github.v3+json',
+        'User-Agent': 'DiscordBot-RAG-Dashboard',
+      };
+      if (token) {
+        headers.Authorization = `Bearer ${token}`;
+      }
+
+      let fetchUrl = '';
+
+      // If token provided and user requested "me" or left blank
+      if (token && (!username || username.toLowerCase() === 'me' || username.toLowerCase() === '@me')) {
+        fetchUrl = 'https://api.github.com/user/repos?affiliation=owner,collaborator,organization_member&sort=updated&per_page=100';
+      } else if (username) {
+        fetchUrl = `https://api.github.com/users/${encodeURIComponent(username)}/repos?sort=updated&per_page=50`;
+      } else {
         return NextResponse.json(
-          { success: false, error: 'GitHub username is required.' },
+          { success: false, error: 'GitHub username or Organization name is required.' },
           { status: 400 }
         );
       }
 
-      const ghRes = await fetch(
-        `https://api.github.com/users/${encodeURIComponent(username)}/repos?sort=updated&per_page=30`,
-        {
-          headers: {
-            Accept: 'application/vnd.github.v3+json',
-            'User-Agent': 'DiscordBot-RAG-Dashboard',
-          },
+      let ghRes = await fetch(fetchUrl, { headers });
+
+      // If /users/... returned 404 and a username was provided, try /orgs/...
+      if (!ghRes.ok && ghRes.status === 404 && username && !fetchUrl.includes('/user/repos')) {
+        const orgUrl = `https://api.github.com/orgs/${encodeURIComponent(username)}/repos?sort=updated&per_page=50`;
+        const orgRes = await fetch(orgUrl, { headers });
+        if (orgRes.ok) {
+          ghRes = orgRes;
         }
-      );
+      }
 
       if (!ghRes.ok) {
+        const errJson = await ghRes.json().catch(() => ({}));
         return NextResponse.json(
-          { success: false, error: `GitHub API error: ${ghRes.statusText}` },
+          {
+            success: false,
+            error: errJson.message || `GitHub API error: ${ghRes.statusText}`,
+          },
           { status: ghRes.status }
         );
       }
 
       const repos = await ghRes.json();
+      if (!Array.isArray(repos)) {
+        return NextResponse.json({ success: true, repositories: [] });
+      }
+
       const formatted = repos.map((r: any) => ({
         name: r.name,
         full_name: r.full_name,
@@ -129,6 +167,8 @@ export async function GET(req: NextRequest) {
         description: r.description || 'No description provided.',
         stars: r.stargazers_count,
         updated_at: r.updated_at,
+        is_private: Boolean(r.private),
+        owner: r.owner?.login,
       }));
 
       return NextResponse.json({ success: true, repositories: formatted });
@@ -145,8 +185,13 @@ export async function POST(req: NextRequest) {
   try {
     const supabase = getSupabaseServer();
     const body = await req.json();
-    let { url, target, is_private = false } = body;
+    let { url, target, is_private = false, github_token } = body;
     const input = (url || target || '').trim();
+
+    const ghToken =
+      github_token ||
+      req.headers.get('x-github-token') ||
+      process.env.GITHUB_TOKEN;
 
     if (!input) {
       return NextResponse.json(
@@ -172,16 +217,19 @@ export async function POST(req: NextRequest) {
         .replace(/\/$/, '');
       projectName = cleanRepo.toLowerCase();
 
+      const apiHeaders: Record<string, string> = {
+        Accept: 'application/vnd.github.v3+json',
+        'User-Agent': 'DiscordBot-RAG-Dashboard',
+      };
+      if (ghToken) {
+        apiHeaders.Authorization = `Bearer ${ghToken}`;
+      }
+
       // 1. Fetch releases
       try {
         const relRes = await fetch(
           `https://api.github.com/repos/${cleanRepo}/releases?per_page=5`,
-          {
-            headers: {
-              Accept: 'application/vnd.github.v3+json',
-              'User-Agent': 'DiscordBot-RAG-Dashboard',
-            },
-          }
+          { headers: apiHeaders }
         );
 
         if (relRes.ok) {
@@ -204,14 +252,17 @@ export async function POST(req: NextRequest) {
 
       // 2. Fetch README.md
       try {
+        const readmeHeaders: Record<string, string> = {
+          Accept: 'application/vnd.github.raw',
+          'User-Agent': 'DiscordBot-RAG-Dashboard',
+        };
+        if (ghToken) {
+          readmeHeaders.Authorization = `Bearer ${ghToken}`;
+        }
+
         const readmeRes = await fetch(
           `https://api.github.com/repos/${cleanRepo}/readme`,
-          {
-            headers: {
-              Accept: 'application/vnd.github.raw',
-              'User-Agent': 'DiscordBot-RAG-Dashboard',
-            },
-          }
+          { headers: readmeHeaders }
         );
 
         if (readmeRes.ok) {
@@ -305,6 +356,11 @@ export async function POST(req: NextRequest) {
         const chunkText = chunks[i];
         const embedding = await getDocumentEmbedding(chunkText);
 
+        if (!embedding) {
+          console.error(`[Ingest] Failed to generate 768-dim embedding for chunk ${i} of ${projectName}`);
+          continue;
+        }
+
         const { error: insErr } = await supabase.from('knowledge_chunks').insert({
           project_name: projectName,
           source_type: sourceType,
@@ -316,11 +372,25 @@ export async function POST(req: NextRequest) {
             ingested_at: new Date().toISOString(),
           },
           is_private: Boolean(is_private),
-          ...(embedding ? { embedding } : {}),
+          embedding,
         });
 
-        if (!insErr) totalChunksCreated++;
+        if (insErr) {
+          console.error(`[Ingest] Supabase insert error for chunk ${i}:`, insErr.message);
+        } else {
+          totalChunksCreated++;
+        }
       }
+    }
+
+    if (totalChunksCreated === 0) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: `Failed to create embeddings or insert chunks for ${projectName}. Check Supabase vector connection or Gemini API key.`,
+        },
+        { status: 500 }
+      );
     }
 
     return NextResponse.json({
