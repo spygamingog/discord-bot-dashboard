@@ -112,7 +112,7 @@ export async function POST(req: NextRequest) {
       {
         role: 'system',
         content: contextStr
-          ? `${effectiveSystemPrompt}\n\n=== VERIFIED DOCUMENTATION CONTEXT ===\n${contextStr}\n\nSTRICT INSTRUCTION: Ground your answer strictly in the documentation above. NEVER invent or hallucinate commands (like /home, /spawn, /warp) or features that are not in the documentation.`
+          ? `${effectiveSystemPrompt}\n\n=== VERIFIED DOCUMENTATION CONTEXT ===\n${contextStr}\n\nSTRICT INSTRUCTION: Ground your answer strictly in the documentation above. Answer ONLY what the user asked. Keep definitions to 1-3 lines with an inviting follow-up question, and answer single-command queries with just that command. NEVER invent or hallucinate commands (like /home, /spawn, /warp) or features that are not in the documentation.`
           : effectiveSystemPrompt,
       },
     ];
