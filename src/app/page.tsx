@@ -21,6 +21,8 @@ import {
   Eye,
   FileText,
   Filter,
+  Github,
+  Globe,
   Hash,
   HelpCircle,
   History,
@@ -43,6 +45,7 @@ import {
   Sparkles,
   Terminal,
   Trash2,
+  UploadCloud,
   User,
   Users,
   Volume2,
@@ -79,6 +82,23 @@ interface Chunk {
   metadata: any;
   is_private: boolean;
   created_at: string;
+}
+
+interface MemoryProject {
+  name: string;
+  source_type: string;
+  is_private: boolean;
+  chunk_count: number;
+  last_updated: string;
+}
+
+interface ScannedRepo {
+  name: string;
+  full_name: string;
+  html_url: string;
+  description: string;
+  stars: number;
+  updated_at: string;
 }
 
 interface GuildSettings {
@@ -169,6 +189,7 @@ export default function Dashboard() {
   });
   const [logs, setLogs] = useState<QueryLog[]>([]);
   const [chunks, setChunks] = useState<Chunk[]>([]);
+  const [memoryProjects, setMemoryProjects] = useState<MemoryProject[]>([]);
   const [telemetry, setTelemetry] = useState<GatewayTelemetry | null>(null);
   const [settings, setSettings] = useState<GuildSettings>({
     guild_id: '1455665865792946330',
@@ -188,6 +209,17 @@ export default function Dashboard() {
   const [toastMessage, setToastMessage] = useState<{ text: string; type: 'ok' | 'err' } | null>(
     null
   );
+
+  // Automated Ingestion & Project Scanner State
+  const [urlInput, setUrlInput] = useState('');
+  const [urlIsPrivate, setUrlIsPrivate] = useState(false);
+  const [urlIngestLoading, setUrlIngestLoading] = useState(false);
+
+  // GitHub Account Scanner
+  const [ghUsername, setGhUsername] = useState('SpyGamingOG');
+  const [ghScanning, setGhScanning] = useState(false);
+  const [scannedRepos, setScannedRepos] = useState<ScannedRepo[]>([]);
+  const [ingestingRepoName, setIngestingRepoName] = useState<string | null>(null);
 
   // Knowledge Base Editor Drawer
   const [searchChunkQuery, setSearchChunkQuery] = useState('');
@@ -245,11 +277,12 @@ export default function Dashboard() {
   const loadData = async (manual = false) => {
     try {
       if (manual) setRefreshing(true);
-      const [statsRes, chunksRes, settingsRes, telemetryRes] = await Promise.all([
+      const [statsRes, chunksRes, settingsRes, telemetryRes, projectsRes] = await Promise.all([
         fetch('/api/stats').then((r) => r.json()),
         fetch('/api/chunks').then((r) => r.json()),
         fetch('/api/settings?guild_id=1455665865792946330').then((r) => r.json()),
         fetch('/api/gateway').then((r) => r.json()),
+        fetch('/api/ingest?action=list_projects').then((r) => r.json()),
       ]);
 
       if (statsRes.success) {
@@ -264,6 +297,9 @@ export default function Dashboard() {
       }
       if (telemetryRes.success) {
         setTelemetry(telemetryRes);
+      }
+      if (projectsRes.success) {
+        setMemoryProjects(projectsRes.projects || []);
       }
 
       if (manual) showToast('Telemetry & database synchronized');
@@ -302,6 +338,108 @@ export default function Dashboard() {
       showToast('Network error saving settings', 'err');
     } finally {
       setSavingSettings(false);
+    }
+  };
+
+  // URL Ingest (GitHub or Modrinth)
+  const handleIngestUrl = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!urlInput.trim()) return;
+
+    setUrlIngestLoading(true);
+    try {
+      const res = await fetch('/api/ingest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: urlInput.trim(),
+          is_private: urlIsPrivate,
+        }),
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        showToast(`Ingested ${data.chunks_created} chunk(s) from ${data.project}`);
+        setUrlInput('');
+        loadData();
+      } else {
+        showToast(data.error || 'Failed to ingest link', 'err');
+      }
+    } catch {
+      showToast('Error during project ingestion', 'err');
+    } finally {
+      setUrlIngestLoading(false);
+    }
+  };
+
+  // Scan GitHub User Repositories
+  const handleScanGitHub = async () => {
+    if (!ghUsername.trim()) return;
+    setGhScanning(true);
+    try {
+      const res = await fetch(
+        `/api/ingest?action=list_github_repos&username=${encodeURIComponent(ghUsername.trim())}`
+      );
+      const data = await res.json();
+
+      if (data.success) {
+        setScannedRepos(data.repositories || []);
+        showToast(`Found ${data.repositories?.length || 0} repositories for ${ghUsername}`);
+      } else {
+        showToast(data.error || 'Failed to fetch repositories', 'err');
+      }
+    } catch {
+      showToast('Network error scanning GitHub', 'err');
+    } finally {
+      setGhScanning(false);
+    }
+  };
+
+  // Ingest Scanned Repo
+  const handleIngestScannedRepo = async (fullName: string) => {
+    setIngestingRepoName(fullName);
+    try {
+      const res = await fetch('/api/ingest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: `https://github.com/${fullName}`,
+          is_private: false,
+        }),
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        showToast(`Indexed ${data.chunks_created} chunks from ${fullName}`);
+        loadData();
+      } else {
+        showToast(data.error || 'Ingest failed', 'err');
+      }
+    } catch {
+      showToast('Failed to ingest repository', 'err');
+    } finally {
+      setIngestingRepoName(null);
+    }
+  };
+
+  // Purge entire project from memory
+  const handlePurgeProject = async (projectName: string) => {
+    if (!confirm(`Are you sure you want to purge all memory vectors for "${projectName}"?`)) return;
+
+    try {
+      const res = await fetch(`/api/ingest?project=${encodeURIComponent(projectName)}`, {
+        method: 'DELETE',
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        showToast(`Purged project "${projectName}" from memory`);
+        loadData();
+      } else {
+        showToast(data.error || 'Failed to purge project', 'err');
+      }
+    } catch {
+      showToast('Failed to purge project', 'err');
     }
   };
 
@@ -391,6 +529,7 @@ export default function Dashboard() {
         showToast('Chunk deleted');
         setChunks((prev) => prev.filter((c) => c.id !== id));
         if (editingChunk?.id === id) setEditingChunk(null);
+        loadData();
       }
     } catch {
       showToast('Failed to delete chunk', 'err');
@@ -465,6 +604,9 @@ export default function Dashboard() {
   // Calculations
   const groqPercent = stats.totalQueries > 0 ? Math.round((stats.groqQueries / stats.totalQueries) * 100) : 100;
   const geminiPercent = stats.totalQueries > 0 ? Math.round((stats.geminiQueries / stats.totalQueries) * 100) : 0;
+
+  // Active Memory Project names
+  const activeProjectNames = new Set(memoryProjects.map((p) => p.name.toLowerCase()));
 
   return (
     <div className="flex min-h-screen bg-[#0A0B0D] text-[#EDEDED] font-sans antialiased selection:bg-[#5E6AD2]/30 selection:text-white">
@@ -541,7 +683,7 @@ export default function Dashboard() {
 
           <div>
             <div className="px-2 py-1 text-[10px] font-mono uppercase tracking-wider text-[#606675]">
-              Vector Storage
+              Vector Knowledge Base
             </div>
             <div className="space-y-0.5 mt-0.5">
               <button
@@ -554,10 +696,12 @@ export default function Dashboard() {
               >
                 <div className="flex items-center gap-2 min-w-0">
                   <Database className="w-3.5 h-3.5 shrink-0" />
-                  <span className="truncate">Knowledge Editor</span>
+                  <span className="truncate">Projects & Ingest</span>
                 </div>
                 <div className="flex items-center gap-1.5">
-                  <span className="font-mono text-[10px] text-[#606675]">{stats.totalChunks}</span>
+                  <span className="font-mono text-[10px] text-emerald-400 font-semibold">
+                    {memoryProjects.length}
+                  </span>
                   <kbd className="font-mono text-[9px] text-[#606675] bg-[#0A0B0D] px-1 py-0.5 rounded border border-[#1B1E26]">
                     2
                   </kbd>
@@ -658,7 +802,7 @@ export default function Dashboard() {
             <span className="text-[#323846]">/</span>
             <span className="text-white font-medium">
               {activeTab === 'telemetry' && 'telemetry'}
-              {activeTab === 'knowledge' && 'knowledge-base'}
+              {activeTab === 'knowledge' && 'vector-knowledge-studio'}
               {activeTab === 'simulator' && 'chat-simulator'}
               {activeTab === 'matrix' && 'policy-matrix'}
               {activeTab === 'prompt' && 'prompt-engine'}
@@ -709,7 +853,6 @@ export default function Dashboard() {
             <div className="space-y-6 animate-in fade-in duration-200">
               {/* Top Operational Metrics Matrix */}
               <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-                {/* Metric 1: Vector Count */}
                 <div className="p-4 rounded-lg bg-[#101216] border border-[#1B1E26] space-y-1">
                   <div className="text-[11px] font-mono uppercase text-[#606675] tracking-wider">
                     Vector Chunks
@@ -718,11 +861,10 @@ export default function Dashboard() {
                     {stats.totalChunks}
                   </div>
                   <div className="text-[11px] font-mono text-[#949AA8]">
-                    Dimension: <span className="text-emerald-400 font-semibold">768</span> (HNSW Cosine)
+                    Across <span className="text-emerald-400 font-semibold">{memoryProjects.length}</span> Project(s)
                   </div>
                 </div>
 
-                {/* Metric 2: Gateway Latency */}
                 <div className="p-4 rounded-lg bg-[#101216] border border-[#1B1E26] space-y-1">
                   <div className="text-[11px] font-mono uppercase text-[#606675] tracking-wider">
                     Gateway Latency
@@ -735,7 +877,6 @@ export default function Dashboard() {
                   </div>
                 </div>
 
-                {/* Metric 3: LLM Failover Ratio */}
                 <div className="p-4 rounded-lg bg-[#101216] border border-[#1B1E26] space-y-1">
                   <div className="text-[11px] font-mono uppercase text-[#606675] tracking-wider">
                     Groq LPU Ratio
@@ -748,7 +889,6 @@ export default function Dashboard() {
                   </div>
                 </div>
 
-                {/* Metric 4: Average Pipeline Speed */}
                 <div className="p-4 rounded-lg bg-[#101216] border border-[#1B1E26] space-y-1">
                   <div className="text-[11px] font-mono uppercase text-[#606675] tracking-wider">
                     Avg Pipeline Speed
@@ -764,7 +904,6 @@ export default function Dashboard() {
 
               {/* Hardware Memory & Sliding-Window Quota Monitor */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {/* Node Process Memory Allocation */}
                 <div className="p-4 rounded-lg bg-[#101216] border border-[#1B1E26] space-y-3">
                   <div className="flex items-center justify-between text-xs">
                     <span className="font-semibold text-white">Process Memory Footprint</span>
@@ -801,7 +940,6 @@ export default function Dashboard() {
                   </div>
                 </div>
 
-                {/* Sliding-Window Rate Limit Guard Status */}
                 <div className="p-4 rounded-lg bg-[#101216] border border-[#1B1E26] space-y-3">
                   <div className="flex items-center justify-between text-xs">
                     <span className="font-semibold text-white">Sliding-Window Rename Guard</span>
@@ -875,117 +1013,287 @@ export default function Dashboard() {
           )}
 
           {/* ========================================================================= */}
-          {/* TAB 2: IN-PLACE VECTOR KNOWLEDGE EDITOR */}
+          {/* TAB 2: PROJECTS & AUTOMATED INGESTION STUDIO */}
           {/* ========================================================================= */}
           {activeTab === 'knowledge' && (
-            <div className="space-y-4 animate-in fade-in duration-200">
-              {/* Top Controls Bar */}
-              <div className="flex items-center justify-between gap-4">
-                <div className="flex items-center gap-3 flex-1 max-w-md">
-                  <div className="relative w-full">
-                    <Search className="w-3.5 h-3.5 text-[#606675] absolute left-3 top-2.5" />
-                    <input
-                      type="text"
-                      value={searchChunkQuery}
-                      onChange={(e) => setSearchChunkQuery(e.target.value)}
-                      placeholder="Filter chunks by title, project, or content..."
-                      className="w-full pl-9 pr-3 py-1.5 rounded bg-[#101216] border border-[#1B1E26] text-xs text-white placeholder-[#606675] focus:outline-none focus:border-[#323846] font-mono"
-                    />
+            <div className="space-y-6 animate-in fade-in duration-200">
+              {/* SECTION A: ACTIVE PROJECTS IN VECTOR MEMORY */}
+              <div className="p-5 rounded-lg bg-[#101216] border border-[#1B1E26] space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-sm font-semibold text-white">Projects in Vector Memory</h3>
+                    <p className="text-xs text-[#949AA8]">
+                      These documentation projects are active in your bot's memory and can be removed at any time.
+                    </p>
                   </div>
-
-                  <div className="flex items-center rounded border border-[#1B1E26] bg-[#101216] p-0.5">
-                    {['all', 'manual', 'github', 'modrinth'].map((src) => (
-                      <button
-                        key={src}
-                        onClick={() => setSelectedSourceFilter(src)}
-                        className={`px-2 py-1 rounded text-[11px] capitalize font-mono transition ${
-                          selectedSourceFilter === src
-                            ? 'bg-[#1C2028] text-white font-semibold'
-                            : 'text-[#606675] hover:text-white'
-                        }`}
-                      >
-                        {src}
-                      </button>
-                    ))}
-                  </div>
+                  <span className="font-mono text-xs px-2.5 py-1 rounded bg-[#1A1D24] text-emerald-400 border border-[#2E3340]">
+                    {memoryProjects.length} Active Project(s)
+                  </span>
                 </div>
 
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => handleOpenEditor()}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-[#EDEDED] hover:bg-white text-black font-semibold text-xs transition"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>New Chunk</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* Chunks High-Density Table */}
-              <div className="rounded-lg bg-[#101216] border border-[#1B1E26] overflow-hidden">
-                {filteredChunks.length === 0 ? (
-                  <div className="p-12 text-center text-xs font-mono text-[#606675]">
-                    No vector chunks found matching query. Click "New Chunk" to index documentation.
+                {memoryProjects.length === 0 ? (
+                  <div className="p-8 text-center text-xs font-mono text-[#606675] border border-[#1B1E26] rounded bg-[#0A0B0D]">
+                    No projects stored in memory yet. Use the 1-Click Ingest below to add GitHub or Modrinth projects!
                   </div>
                 ) : (
-                  <table className="w-full text-left text-xs font-mono">
-                    <thead>
-                      <tr className="border-b border-[#1B1E26] text-[10px] text-[#606675] uppercase tracking-wider bg-[#0E1014]">
-                        <th className="py-2.5 px-4 font-semibold">Title / Project</th>
-                        <th className="py-2.5 px-4 font-semibold">Source</th>
-                        <th className="py-2.5 px-4 font-semibold">Content Snippet</th>
-                        <th className="py-2.5 px-4 font-semibold">Size</th>
-                        <th className="py-2.5 px-4 font-semibold">Privacy</th>
-                        <th className="py-2.5 px-4 font-semibold text-right">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-[#181B22]">
-                      {filteredChunks.map((chunk) => (
-                        <tr key={chunk.id} className="hover:bg-[#14161C] transition">
-                          <td className="py-3 px-4 font-medium text-white max-w-xs truncate">
-                            <div>{chunk.metadata?.title || chunk.project_name}</div>
-                            <div className="text-[10px] text-[#606675]">{chunk.project_name}</div>
-                          </td>
-                          <td className="py-3 px-4">
-                            <span className="px-1.5 py-0.5 rounded text-[10px] uppercase font-bold bg-[#1C2028] text-[#949AA8] border border-[#242833]">
-                              {chunk.source_type}
-                            </span>
-                          </td>
-                          <td className="py-3 px-4 text-[#949AA8] max-w-sm truncate text-[11px]">
-                            {chunk.content}
-                          </td>
-                          <td className="py-3 px-4 text-[#606675] text-[10px]">
-                            {chunk.content.length} chars (~{Math.round(chunk.content.length / 4)} tokens)
-                          </td>
-                          <td className="py-3 px-4">
-                            {chunk.is_private ? (
-                              <span className="text-amber-400 font-bold text-[10px]">Private</span>
-                            ) : (
-                              <span className="text-[#606675] text-[10px]">Public</span>
-                            )}
-                          </td>
-                          <td className="py-3 px-4 text-right">
-                            <div className="flex items-center justify-end gap-2">
-                              <button
-                                onClick={() => handleOpenEditor(chunk)}
-                                className="px-2 py-1 rounded bg-[#1C2028] hover:bg-[#252B38] text-white text-[11px] transition"
-                              >
-                                Edit In-Place
-                              </button>
-                              <button
-                                onClick={() => handleDeleteChunk(chunk.id)}
-                                className="p-1 rounded text-[#606675] hover:text-rose-400 hover:bg-rose-500/10 transition"
-                                title="Delete"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    {memoryProjects.map((p) => (
+                      <div
+                        key={p.name}
+                        className="p-3.5 rounded bg-[#0A0B0D] border border-[#1B1E26] hover:border-[#2E3340] transition space-y-2.5 font-mono text-xs"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="font-bold text-white truncate max-w-[180px]">{p.name}</span>
+                          <span className="px-1.5 py-0.5 rounded text-[9px] uppercase font-bold bg-[#1A1D24] text-[#949AA8] border border-[#242833]">
+                            {p.source_type}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center justify-between text-[11px] text-[#606675]">
+                          <span>{p.chunk_count} vector chunk(s)</span>
+                          <span>{p.is_private ? '🔒 Private' : '🌐 Public'}</span>
+                        </div>
+
+                        <div className="pt-2 border-t border-[#181B22] flex items-center justify-between">
+                          <span className="text-[10px] text-[#606675]">
+                            {new Date(p.last_updated).toLocaleDateString()}
+                          </span>
+                          <button
+                            onClick={() => handlePurgeProject(p.name)}
+                            className="px-2 py-1 rounded text-[11px] bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 border border-rose-500/20 transition flex items-center gap-1"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                            <span>Purge Memory</span>
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 )}
+              </div>
+
+              {/* SECTION B: 1-CLICK GITHUB / MODRINTH URL INGESTION */}
+              <div className="p-5 rounded-lg bg-[#101216] border border-[#1B1E26] space-y-4">
+                <div>
+                  <h3 className="text-sm font-semibold text-white">1-Click URL & Project Ingestion</h3>
+                  <p className="text-xs text-[#949AA8]">
+                    Paste any GitHub repository link (or owner/repo) or Modrinth link to automatically scrape, chunk, and embed.
+                  </p>
+                </div>
+
+                <form onSubmit={handleIngestUrl} className="space-y-3 font-mono text-xs">
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={urlInput}
+                      onChange={(e) => setUrlInput(e.target.value)}
+                      placeholder="e.g., https://github.com/octocat/Hello-World or https://modrinth.com/mod/sodium"
+                      className="flex-1 px-3 py-2 rounded bg-[#0A0B0D] border border-[#1B1E26] text-xs text-white placeholder-[#606675] focus:outline-none focus:border-[#323846]"
+                    />
+                    <button
+                      type="submit"
+                      disabled={urlIngestLoading || !urlInput.trim()}
+                      className="px-4 py-2 rounded bg-[#EDEDED] hover:bg-white disabled:opacity-40 text-black font-semibold text-xs transition shrink-0 flex items-center gap-1.5"
+                    >
+                      {urlIngestLoading ? (
+                        <>
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          <span>Embedding...</span>
+                        </>
+                      ) : (
+                        <>
+                          <UploadCloud className="w-3.5 h-3.5" />
+                          <span>Index & Embed</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                  <div className="flex items-center justify-between text-[11px] text-[#606675]">
+                    <label className="flex items-center gap-2 cursor-pointer text-[#949AA8]">
+                      <input
+                        type="checkbox"
+                        checked={urlIsPrivate}
+                        onChange={(e) => setUrlIsPrivate(e.target.checked)}
+                        className="accent-[#5E6AD2]"
+                      />
+                      <span>Private Documentation (Restricted to Bot Owner queries)</span>
+                    </label>
+                    <span>Automatically parses Releases & README.md</span>
+                  </div>
+                </form>
+              </div>
+
+              {/* SECTION C: GITHUB ACCOUNT PROJECT SCANNER */}
+              <div className="p-5 rounded-lg bg-[#101216] border border-[#1B1E26] space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div>
+                    <h3 className="text-sm font-semibold text-white">Scan GitHub Profile Repositories</h3>
+                    <p className="text-xs text-[#949AA8]">
+                      Scan all your repositories and select exactly which projects to keep in bot memory.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={ghUsername}
+                      onChange={(e) => setGhUsername(e.target.value)}
+                      placeholder="GitHub username..."
+                      className="px-3 py-1.5 rounded bg-[#0A0B0D] border border-[#1B1E26] text-xs text-white font-mono placeholder-[#606675] focus:outline-none focus:border-[#323846]"
+                    />
+                    <button
+                      onClick={handleScanGitHub}
+                      disabled={ghScanning || !ghUsername.trim()}
+                      className="px-3 py-1.5 rounded bg-[#1C2028] hover:bg-[#252B38] text-white font-mono text-xs border border-[#2E3340] transition flex items-center gap-1.5"
+                    >
+                      {ghScanning ? (
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Github className="w-3.5 h-3.5" />
+                      )}
+                      <span>Scan Projects</span>
+                    </button>
+                  </div>
+                </div>
+
+                {scannedRepos.length > 0 && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2 font-mono text-xs">
+                    {scannedRepos.map((repo) => {
+                      const inMemory = activeProjectNames.has(repo.full_name.toLowerCase());
+                      const isIngesting = ingestingRepoName === repo.full_name;
+
+                      return (
+                        <div
+                          key={repo.full_name}
+                          className="p-3.5 rounded bg-[#0A0B0D] border border-[#1B1E26] space-y-2 flex flex-col justify-between"
+                        >
+                          <div>
+                            <div className="flex items-center justify-between">
+                              <span className="font-bold text-white truncate max-w-[240px]">
+                                {repo.name}
+                              </span>
+                              {inMemory ? (
+                                <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                                  ● In Memory
+                                </span>
+                              ) : (
+                                <span className="text-[10px] text-[#606675]">Not Ingested</span>
+                              )}
+                            </div>
+                            <p className="text-[11px] text-[#949AA8] mt-1 line-clamp-2 leading-relaxed">
+                              {repo.description}
+                            </p>
+                          </div>
+
+                          <div className="pt-2 border-t border-[#181B22] flex items-center justify-between">
+                            <span className="text-[10px] text-[#606675]">
+                              ★ {repo.stars} stars
+                            </span>
+                            {inMemory ? (
+                              <button
+                                onClick={() => handlePurgeProject(repo.full_name.toLowerCase())}
+                                className="px-2.5 py-1 rounded text-[10px] bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 border border-rose-500/20 transition"
+                              >
+                                Remove from Memory
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => handleIngestScannedRepo(repo.full_name)}
+                                disabled={isIngesting}
+                                className="px-2.5 py-1 rounded text-[10px] bg-[#EDEDED] hover:bg-white text-black font-semibold transition"
+                              >
+                                {isIngesting ? 'Ingesting...' : '+ Add to Memory'}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* SECTION D: RAW CHUNK TABLE & IN-PLACE EDITOR */}
+              <div className="space-y-4">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="flex items-center gap-3 flex-1 max-w-md">
+                    <div className="relative w-full">
+                      <Search className="w-3.5 h-3.5 text-[#606675] absolute left-3 top-2.5" />
+                      <input
+                        type="text"
+                        value={searchChunkQuery}
+                        onChange={(e) => setSearchChunkQuery(e.target.value)}
+                        placeholder="Search all individual chunks..."
+                        className="w-full pl-9 pr-3 py-1.5 rounded bg-[#101216] border border-[#1B1E26] text-xs text-white placeholder-[#606675] focus:outline-none focus:border-[#323846] font-mono"
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={() => handleOpenEditor()}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-[#1C2028] hover:bg-[#252B38] border border-[#2E3340] text-white font-semibold text-xs transition"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Manual Chunk</span>
+                  </button>
+                </div>
+
+                <div className="rounded-lg bg-[#101216] border border-[#1B1E26] overflow-hidden">
+                  {filteredChunks.length === 0 ? (
+                    <div className="p-8 text-center text-xs font-mono text-[#606675]">
+                      No individual chunks match your search query.
+                    </div>
+                  ) : (
+                    <table className="w-full text-left text-xs font-mono">
+                      <thead>
+                        <tr className="border-b border-[#1B1E26] text-[10px] text-[#606675] uppercase tracking-wider bg-[#0E1014]">
+                          <th className="py-2.5 px-4 font-semibold">Title / Project</th>
+                          <th className="py-2.5 px-4 font-semibold">Source</th>
+                          <th className="py-2.5 px-4 font-semibold">Content Snippet</th>
+                          <th className="py-2.5 px-4 font-semibold">Size</th>
+                          <th className="py-2.5 px-4 font-semibold text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#181B22]">
+                        {filteredChunks.slice(0, 15).map((chunk) => (
+                          <tr key={chunk.id} className="hover:bg-[#14161C] transition">
+                            <td className="py-3 px-4 font-medium text-white max-w-xs truncate">
+                              <div>{chunk.metadata?.title || chunk.project_name}</div>
+                              <div className="text-[10px] text-[#606675]">{chunk.project_name}</div>
+                            </td>
+                            <td className="py-3 px-4">
+                              <span className="px-1.5 py-0.5 rounded text-[10px] uppercase font-bold bg-[#1C2028] text-[#949AA8] border border-[#242833]">
+                                {chunk.source_type}
+                              </span>
+                            </td>
+                            <td className="py-3 px-4 text-[#949AA8] max-w-sm truncate text-[11px]">
+                              {chunk.content}
+                            </td>
+                            <td className="py-3 px-4 text-[#606675] text-[10px]">
+                              {chunk.content.length} chars
+                            </td>
+                            <td className="py-3 px-4 text-right">
+                              <div className="flex items-center justify-end gap-2">
+                                <button
+                                  onClick={() => handleOpenEditor(chunk)}
+                                  className="px-2 py-1 rounded bg-[#1C2028] hover:bg-[#252B38] text-white text-[11px] transition"
+                                >
+                                  Edit
+                                </button>
+                                <button
+                                  onClick={() => handleDeleteChunk(chunk.id)}
+                                  className="p-1 rounded text-[#606675] hover:text-rose-400 hover:bg-rose-500/10 transition"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
               </div>
 
               {/* In-Place Chunk Editor Drawer */}
@@ -1098,7 +1406,6 @@ export default function Dashboard() {
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 animate-in fade-in duration-200">
               {/* Left 7 cols: Chat Conversation Pane */}
               <div className="lg:col-span-7 flex flex-col h-[640px] rounded-lg bg-[#101216] border border-[#1B1E26] overflow-hidden">
-                {/* Channel Header */}
                 <div className="h-10 px-4 border-b border-[#1B1E26] flex items-center justify-between bg-[#0E1014] text-xs font-mono">
                   <div className="flex items-center gap-2 text-white">
                     <Hash className="w-3.5 h-3.5 text-[#606675]" />
@@ -1107,7 +1414,6 @@ export default function Dashboard() {
                   <span className="text-[10px] text-[#606675]">Multi-turn RAG Test Bench</span>
                 </div>
 
-                {/* Messages Container */}
                 <div className="flex-1 p-4 overflow-y-auto space-y-4 font-sans text-xs">
                   {chatMessages.map((msg, i) => (
                     <div key={i} className="space-y-1.5">
@@ -1143,7 +1449,6 @@ export default function Dashboard() {
                   )}
                 </div>
 
-                {/* Input Bar */}
                 <form onSubmit={handleSendChat} className="p-3 border-t border-[#1B1E26] bg-[#0E1014] flex gap-2">
                   <input
                     type="text"
@@ -1164,7 +1469,6 @@ export default function Dashboard() {
 
               {/* Right 5 cols: Latency Waterfall & Chunk Inspector */}
               <div className="lg:col-span-5 space-y-4">
-                {/* Latency Waterfall Breakdown Card */}
                 <div className="p-4 rounded-lg bg-[#101216] border border-[#1B1E26] space-y-3 font-mono text-xs">
                   <div className="flex items-center justify-between">
                     <span className="font-semibold text-white">Pipeline Latency Waterfall</span>
@@ -1173,9 +1477,7 @@ export default function Dashboard() {
                     </span>
                   </div>
 
-                  {/* Waterfall Bars */}
                   <div className="space-y-2 pt-1">
-                    {/* Stage 1: Gemini Embedding */}
                     <div>
                       <div className="flex justify-between text-[10px] text-[#949AA8] mb-1">
                         <span>1. Gemini Embedding</span>
@@ -1194,7 +1496,6 @@ export default function Dashboard() {
                       </div>
                     </div>
 
-                    {/* Stage 2: Supabase RPC */}
                     <div>
                       <div className="flex justify-between text-[10px] text-[#949AA8] mb-1">
                         <span>2. pgvector HNSW RPC</span>
@@ -1213,7 +1514,6 @@ export default function Dashboard() {
                       </div>
                     </div>
 
-                    {/* Stage 3: Groq LPU */}
                     <div>
                       <div className="flex justify-between text-[10px] text-[#949AA8] mb-1">
                         <span>3. Groq LPU Inference (qwen3.8)</span>
@@ -1234,7 +1534,6 @@ export default function Dashboard() {
                   </div>
                 </div>
 
-                {/* Retrieved Knowledge Chunks Inspector */}
                 <div className="p-4 rounded-lg bg-[#101216] border border-[#1B1E26] space-y-3 font-mono text-xs">
                   <div className="flex items-center justify-between">
                     <span className="font-semibold text-white">
@@ -1276,7 +1575,6 @@ export default function Dashboard() {
           {/* ========================================================================= */}
           {activeTab === 'matrix' && (
             <div className="space-y-6 animate-in fade-in duration-200">
-              {/* Channel Routing Tree */}
               <div className="p-5 rounded-lg bg-[#101216] border border-[#1B1E26] space-y-4">
                 <div className="flex items-center justify-between">
                   <div>
@@ -1290,7 +1588,6 @@ export default function Dashboard() {
                   </span>
                 </div>
 
-                {/* Visual Channel Hierarchy */}
                 <div className="p-3 rounded bg-[#0A0B0D] border border-[#1B1E26] space-y-1.5 font-mono text-xs">
                   <div className="text-[10px] uppercase text-[#606675] tracking-wider px-2 py-1">
                     📁 TEXT CHANNELS
@@ -1325,7 +1622,6 @@ export default function Dashboard() {
                   </div>
                 </div>
 
-                {/* Routing Toggles */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2 font-mono text-xs">
                   <div className="p-3 rounded bg-[#0A0B0D] border border-[#1B1E26] flex items-center justify-between">
                     <div>
@@ -1359,7 +1655,6 @@ export default function Dashboard() {
                 </div>
               </div>
 
-              {/* Slash Command Policy & Security Matrix */}
               <div className="p-5 rounded-lg bg-[#101216] border border-[#1B1E26] space-y-4">
                 <div className="flex items-center justify-between">
                   <div>
@@ -1464,7 +1759,6 @@ export default function Dashboard() {
                   </span>
                 </div>
 
-                {/* Preset Chips */}
                 <div className="flex gap-2 pt-1">
                   {[
                     {
@@ -1507,7 +1801,6 @@ export default function Dashboard() {
                   className="w-full p-3.5 rounded bg-[#0A0B0D] border border-[#1B1E26] text-white focus:outline-none focus:border-[#323846] leading-relaxed text-xs"
                 />
 
-                {/* RAG Cosine Threshold Slider */}
                 <div className="p-3 rounded bg-[#0A0B0D] border border-[#1B1E26] space-y-2">
                   <div className="flex items-center justify-between">
                     <span className="text-white font-semibold">Minimum RAG Cosine Similarity Threshold</span>
