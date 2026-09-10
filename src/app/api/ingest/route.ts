@@ -250,33 +250,81 @@ export async function POST(req: NextRequest) {
         console.warn('Could not fetch releases:', err);
       }
 
-      // 2. Fetch README.md
+      // 2. Comprehensive Documentation Scan (All .md files, DOCUMENTATION.md, plugin.yml via Git Trees API)
       try {
-        const readmeHeaders: Record<string, string> = {
-          Accept: 'application/vnd.github.raw',
-          'User-Agent': 'DiscordBot-RAG-Dashboard',
-        };
-        if (ghToken) {
-          readmeHeaders.Authorization = `Bearer ${ghToken}`;
+        let treeData: any = null;
+        let defaultBranch = 'main';
+
+        for (const branch of ['main', 'master']) {
+          const treeRes = await fetch(
+            `https://api.github.com/repos/${cleanRepo}/git/trees/${branch}?recursive=1`,
+            { headers: apiHeaders }
+          );
+          if (treeRes.ok) {
+            treeData = await treeRes.json();
+            defaultBranch = branch;
+            break;
+          }
         }
 
-        const readmeRes = await fetch(
-          `https://api.github.com/repos/${cleanRepo}/readme`,
-          { headers: readmeHeaders }
-        );
+        if (treeData && Array.isArray(treeData.tree)) {
+          // Filter all markdown documentation and plugin manifests
+          const docFiles = treeData.tree.filter((f: any) =>
+            f.type === 'blob' &&
+            (f.path.endsWith('.md') ||
+             f.path.endsWith('.markdown') ||
+             f.path.endsWith('plugin.yml') ||
+             f.path.endsWith('config.yml'))
+          );
 
-        if (readmeRes.ok) {
-          const readmeText = await readmeRes.text();
-          if (readmeText && readmeText.trim()) {
-            documentsToIndex.push({
-              title: `${cleanRepo} README & Documentation`,
-              version: 'main',
-              content: `# ${cleanRepo} Documentation\n\n${readmeText}`,
-            });
+          console.log(`[Ingest] Discovered ${docFiles.length} documentation file(s) in ${cleanRepo}:`, docFiles.map((f: any) => f.path));
+
+          // Fetch each doc file (limit to top 20 to stay within rate limits)
+          for (const file of docFiles.slice(0, 20)) {
+            try {
+              const rawUrl = `https://raw.githubusercontent.com/${cleanRepo}/${defaultBranch}/${file.path}`;
+              const fileRes = await fetch(rawUrl, {
+                headers: ghToken ? { Authorization: `Bearer ${ghToken}` } : {},
+              });
+
+              if (fileRes.ok) {
+                const content = await fileRes.text();
+                if (content && content.trim().length > 20) {
+                  const isPluginYml = file.path.endsWith('plugin.yml');
+                  const docTitle = isPluginYml
+                    ? `${cleanRepo} Commands & Permissions Manifest (${file.path})`
+                    : `${cleanRepo} - ${file.path}`;
+
+                  documentsToIndex.push({
+                    title: docTitle,
+                    version: defaultBranch,
+                    content: `# ${cleanRepo}: ${file.path}\n\n${content}`,
+                  });
+                }
+              }
+            } catch (fileErr) {
+              console.warn(`Could not fetch ${file.path}:`, fileErr);
+            }
+          }
+        } else {
+          // Fallback if Tree API fails: Fetch README.md directly
+          const readmeRes = await fetch(
+            `https://api.github.com/repos/${cleanRepo}/readme`,
+            { headers: { ...apiHeaders, Accept: 'application/vnd.github.raw' } }
+          );
+          if (readmeRes.ok) {
+            const readmeText = await readmeRes.text();
+            if (readmeText && readmeText.trim()) {
+              documentsToIndex.push({
+                title: `${cleanRepo} README & Documentation`,
+                version: 'main',
+                content: `# ${cleanRepo} Documentation\n\n${readmeText}`,
+              });
+            }
           }
         }
       } catch (err) {
-        console.warn('Could not fetch README:', err);
+        console.warn('Documentation scan error:', err);
       }
 
       if (documentsToIndex.length === 0) {

@@ -45,6 +45,7 @@ export async function POST(req: NextRequest) {
               model: 'models/gemini-embedding-2-preview',
               content: { parts: [{ text: userQuery }] },
               taskType: 'RETRIEVAL_QUERY',
+              outputDimensionality: 768,
             }),
           }
         );
@@ -62,9 +63,9 @@ export async function POST(req: NextRequest) {
               'match_knowledge_chunks',
               {
                 query_embedding: embeddingVector,
-                match_threshold: Number(threshold),
-                match_count: 5,
-                include_private: true,
+                match_threshold: Number(threshold || 0.4),
+                match_count: 6,
+                filter_private: true,
               }
             );
             vectorRpcMs = Date.now() - tRpcStart;
@@ -93,16 +94,25 @@ export async function POST(req: NextRequest) {
         .join('\n\n');
     }
 
-    const effectiveSystemPrompt =
-      systemPrompt ||
-      'You are an intelligent, helpful, and concise AI assistant for this Discord server.';
+    let effectiveSystemPrompt = systemPrompt;
+    if (!effectiveSystemPrompt) {
+      const supabase = getSupabaseServer();
+      const { data: settingsData } = await supabase
+        .from('guild_settings')
+        .select('system_prompt')
+        .eq('guild_id', '1455665865792946330')
+        .single();
+      effectiveSystemPrompt =
+        settingsData?.system_prompt ||
+        'You are the official SpyGaming AI Assistant for the SpyGaming community, its Minecraft servers, and custom plugins.';
+    }
 
     // Construct conversation messages
     const promptMessages: any[] = [
       {
         role: 'system',
         content: contextStr
-          ? `${effectiveSystemPrompt}\n\nUse the following verified knowledge base context to answer accurately:\n\n${contextStr}`
+          ? `${effectiveSystemPrompt}\n\n=== VERIFIED DOCUMENTATION CONTEXT ===\n${contextStr}\n\nSTRICT INSTRUCTION: Ground your answer strictly in the documentation above. NEVER invent or hallucinate commands (like /home, /spawn, /warp) or features that are not in the documentation.`
           : effectiveSystemPrompt,
       },
     ];
