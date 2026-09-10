@@ -257,6 +257,13 @@ export default function Dashboard() {
   const [confirmPurgeProject, setConfirmPurgeProject] = useState<string | null>(null);
   const [isPurgingProject, setIsPurgingProject] = useState<string | null>(null);
 
+  // Dynamic Sync & Webhook States
+  const [isSyncingProject, setIsSyncingProject] = useState<string | null>(null);
+  const [isSyncingAll, setIsSyncingAll] = useState(false);
+  const [showWebhookModal, setShowWebhookModal] = useState(false);
+  const [webhookRegisteringRepo, setWebhookRegisteringRepo] = useState<string | null>(null);
+  const [webhookCopied, setWebhookCopied] = useState(false);
+
   // Knowledge Base Editor Drawer
   const [searchChunkQuery, setSearchChunkQuery] = useState('');
   const [selectedSourceFilter, setSelectedSourceFilter] = useState<string>('all');
@@ -504,6 +511,106 @@ export default function Dashboard() {
       showToast('Failed to purge project', 'err');
     } finally {
       setIsPurgingProject(null);
+    }
+  };
+
+  // Dynamic Sync single project from GitHub/Modrinth
+  const handleSyncProject = async (projectName: string) => {
+    try {
+      setIsSyncingProject(projectName);
+      showToast(`Syncing "${projectName}" with latest documentation...`);
+
+      const res = await fetch('/api/ingest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          target: projectName,
+          github_token: ghToken || undefined,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || 'Failed to sync project');
+      }
+
+      showToast(`Synced ${projectName}! ${data.chunks_created} chunks across ${data.documents_parsed} docs updated.`);
+      loadData();
+    } catch (err: any) {
+      showToast(err.message || 'Sync failed', 'err');
+    } finally {
+      setIsSyncingProject(null);
+    }
+  };
+
+  // Dynamic Sync all active projects in memory
+  const handleSyncAllProjects = async () => {
+    if (memoryProjects.length === 0) return;
+    try {
+      setIsSyncingAll(true);
+      showToast(`Syncing ${memoryProjects.length} projects with latest documentation...`);
+
+      let totalSynced = 0;
+      for (const p of memoryProjects) {
+        try {
+          const res = await fetch('/api/ingest', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              target: p.name,
+              github_token: ghToken || undefined,
+            }),
+          });
+          const data = await res.json();
+          if (data.success) totalSynced++;
+        } catch {
+          // Continue with next project
+        }
+      }
+
+      showToast(`Sync complete: ${totalSynced}/${memoryProjects.length} projects updated.`);
+      loadData();
+    } catch (err: any) {
+      showToast(err.message || 'Sync all failed', 'err');
+    } finally {
+      setIsSyncingAll(false);
+    }
+  };
+
+  // Register Webhook on GitHub automatically via API
+  const handleRegisterWebhook = async (repoName: string) => {
+    if (!ghToken) {
+      showToast('Please add your GitHub PAT first with repo/admin:repo_hook scope', 'err');
+      setShowTokenInput(true);
+      return;
+    }
+
+    try {
+      setWebhookRegisteringRepo(repoName);
+      const origin = typeof window !== 'undefined' ? window.location.origin : '';
+      const webhookUrl = `${origin}/api/webhooks/github`;
+
+      const res = await fetch('/api/ingest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'create_webhook',
+          repo: repoName,
+          github_token: ghToken,
+          webhook_url: webhookUrl,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || 'Failed to register webhook');
+      }
+
+      showToast(data.message || `Webhook successfully connected to ${repoName}!`);
+    } catch (err: any) {
+      showToast(err.message || 'Webhook registration failed', 'err');
+    } finally {
+      setWebhookRegisteringRepo(null);
     }
   };
 
@@ -1083,17 +1190,120 @@ export default function Dashboard() {
             <div className="space-y-6 animate-in fade-in duration-200">
               {/* SECTION A: ACTIVE PROJECTS IN VECTOR MEMORY */}
               <div className="p-5 rounded-lg bg-[#101216] border border-[#1B1E26] space-y-4">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div>
-                    <h3 className="text-sm font-semibold text-white">Projects in Vector Memory</h3>
+                    <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+                      <Database className="w-4 h-4 text-emerald-400" />
+                      <span>Projects in Vector Memory</span>
+                    </h3>
                     <p className="text-xs text-[#949AA8]">
-                      These documentation projects are active in your bot's memory and can be removed at any time.
+                      These documentation projects are active in your bot's memory and automatically refreshed when updated.
                     </p>
                   </div>
-                  <span className="font-mono text-xs px-2.5 py-1 rounded bg-[#1A1D24] text-emerald-400 border border-[#2E3340]">
-                    {memoryProjects.length} Active Project(s)
-                  </span>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      onClick={handleSyncAllProjects}
+                      disabled={isSyncingAll || memoryProjects.length === 0}
+                      className="px-2.5 py-1 rounded bg-[#1C2028] hover:bg-[#252B38] border border-[#2E3340] text-xs text-white font-mono transition flex items-center gap-1.5 disabled:opacity-50"
+                      title="Re-scan all repositories in memory for updates"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${isSyncingAll ? 'animate-spin text-emerald-400' : ''}`} />
+                      <span>{isSyncingAll ? 'Syncing All...' : 'Sync All'}</span>
+                    </button>
+                    <button
+                      onClick={() => setShowWebhookModal(!showWebhookModal)}
+                      className={`px-2.5 py-1 rounded border text-xs font-mono transition flex items-center gap-1.5 ${
+                        showWebhookModal
+                          ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                          : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/15'
+                      }`}
+                      title="Configure real-time automated GitHub push webhooks"
+                    >
+                      <Radio className="w-3.5 h-3.5" />
+                      <span>Auto-Sync Webhook</span>
+                    </button>
+                    <span className="font-mono text-xs px-2.5 py-1 rounded bg-[#1A1D24] text-emerald-400 border border-[#2E3340]">
+                      {memoryProjects.length} Active Project(s)
+                    </span>
+                  </div>
                 </div>
+
+                {/* Real-time GitHub Webhook Drawer */}
+                {showWebhookModal && (
+                  <div className="p-4 rounded-lg bg-[#0E1015] border border-emerald-500/30 space-y-3 font-mono text-xs animate-in fade-in duration-200">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2 text-white font-semibold">
+                        <Radio className="w-4 h-4 text-emerald-400 animate-pulse" />
+                        <span>Real-Time GitHub Webhook Auto-Sync</span>
+                      </div>
+                      <span className="px-2 py-0.5 rounded text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                        ● Zero-Latency Push Sync
+                      </span>
+                    </div>
+
+                    <p className="text-[#949AA8] text-[11px] leading-relaxed">
+                      Whenever you push commits, add new <code>.md</code> files, or release updates to your GitHub repository, GitHub automatically sends a webhook to this endpoint. The bot immediately re-scans the repository tree and updates vector memory within seconds.
+                    </p>
+
+                    <div className="space-y-1.5 pt-1">
+                      <div className="text-[10px] text-[#606675] uppercase tracking-wider">Payload URL:</div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          readOnly
+                          value={typeof window !== 'undefined' ? `${window.location.origin}/api/webhooks/github` : '/api/webhooks/github'}
+                          className="flex-1 px-3 py-1.5 rounded bg-[#0A0B0D] border border-[#1B1E26] text-white text-xs select-all focus:outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (typeof window !== 'undefined') {
+                              navigator.clipboard.writeText(`${window.location.origin}/api/webhooks/github`);
+                              setWebhookCopied(true);
+                              setTimeout(() => setWebhookCopied(false), 2500);
+                              showToast('Copied webhook URL to clipboard!');
+                            }
+                          }}
+                          className="px-3 py-1.5 rounded bg-[#1C2028] hover:bg-[#252B38] border border-[#2E3340] text-white font-mono text-xs flex items-center gap-1.5 transition"
+                        >
+                          {webhookCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                          <span>{webhookCopied ? 'Copied' : 'Copy'}</span>
+                        </button>
+                      </div>
+                      <div className="text-[10px] text-[#606675]">
+                        Settings: Content type: <code>application/json</code> | Trigger on: <code>Pushes</code> &amp; <code>Releases</code>
+                      </div>
+                    </div>
+
+                    {/* 1-Click Setup on Tracked Repositories if PAT is present */}
+                    {memoryProjects.filter((p) => p.source_type === 'github' && p.name.includes('/')).length > 0 && (
+                      <div className="pt-2 border-t border-[#181B22] space-y-2">
+                        <div className="text-[10px] uppercase text-[#606675] tracking-wider">
+                          1-Click Automated Setup for Tracked Projects:
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {memoryProjects
+                            .filter((p) => p.source_type === 'github' && p.name.includes('/'))
+                            .map((p) => (
+                              <button
+                                key={p.name}
+                                onClick={() => handleRegisterWebhook(p.name)}
+                                disabled={webhookRegisteringRepo === p.name}
+                                className="px-2.5 py-1 rounded bg-[#141822] hover:bg-[#1C2232] border border-[#262F44] text-[#EDEDED] text-[11px] transition flex items-center gap-1.5 disabled:opacity-50"
+                              >
+                                {webhookRegisteringRepo === p.name ? (
+                                  <Loader2 className="w-3 h-3 animate-spin text-emerald-400" />
+                                ) : (
+                                  <Zap className="w-3 h-3 text-emerald-400" />
+                                )}
+                                <span>Connect Webhook to {p.name}</span>
+                              </button>
+                            ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {memoryProjects.length === 0 ? (
                   <div className="p-8 text-center text-xs font-mono text-[#606675] border border-[#1B1E26] rounded bg-[#0A0B0D]">
@@ -1122,32 +1332,43 @@ export default function Dashboard() {
                           <span className="text-[10px] text-[#606675]">
                             {new Date(p.last_updated).toLocaleDateString()}
                           </span>
-                          <button
-                            onClick={() => handlePurgeProject(p.name)}
-                            disabled={isPurgingProject === p.name}
-                            className={`px-2 py-1 rounded text-[11px] transition flex items-center gap-1 font-mono ${
-                              confirmPurgeProject === p.name
-                                ? 'bg-rose-600 hover:bg-rose-700 text-white font-bold animate-pulse'
-                                : 'bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 border border-rose-500/20'
-                            }`}
-                          >
-                            {isPurgingProject === p.name ? (
-                              <>
-                                <Loader2 className="w-3 h-3 animate-spin" />
-                                <span>Purging...</span>
-                              </>
-                            ) : confirmPurgeProject === p.name ? (
-                              <>
-                                <AlertTriangle className="w-3 h-3" />
-                                <span>Confirm Delete?</span>
-                              </>
-                            ) : (
-                              <>
-                                <Trash2 className="w-3 h-3" />
-                                <span>Purge Memory</span>
-                              </>
-                            )}
-                          </button>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              onClick={() => handleSyncProject(p.name)}
+                              disabled={isSyncingProject === p.name}
+                              className="px-2 py-1 rounded text-[11px] bg-[#1C2028] hover:bg-[#252B38] text-[#EDEDED] border border-[#2E3340] transition flex items-center gap-1 font-mono disabled:opacity-50"
+                              title="Re-scan repository for new/modified .md files and update memory"
+                            >
+                              <RefreshCw className={`w-3 h-3 ${isSyncingProject === p.name ? 'animate-spin text-emerald-400' : ''}`} />
+                              <span>{isSyncingProject === p.name ? 'Syncing...' : 'Sync'}</span>
+                            </button>
+                            <button
+                              onClick={() => handlePurgeProject(p.name)}
+                              disabled={isPurgingProject === p.name}
+                              className={`px-2 py-1 rounded text-[11px] transition flex items-center gap-1 font-mono ${
+                                confirmPurgeProject === p.name
+                                  ? 'bg-rose-600 hover:bg-rose-700 text-white font-bold animate-pulse'
+                                  : 'bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 border border-rose-500/20'
+                              }`}
+                            >
+                              {isPurgingProject === p.name ? (
+                                <>
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                  <span>Purging...</span>
+                                </>
+                              ) : confirmPurgeProject === p.name ? (
+                                <>
+                                  <AlertTriangle className="w-3 h-3" />
+                                  <span>Confirm Delete?</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Trash2 className="w-3 h-3" />
+                                  <span>Purge</span>
+                                </>
+                              )}
+                            </button>
+                          </div>
                         </div>
                       </div>
                     ))}

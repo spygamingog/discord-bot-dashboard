@@ -1,59 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseServer } from '@/lib/supabaseServer';
+import { syncProject } from '@/lib/projectIngestor';
 
 export const dynamic = 'force-dynamic';
-
-// Helper to generate 768-dim vector using Gemini
-async function getDocumentEmbedding(text: string): Promise<number[] | null> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    console.error('GEMINI_API_KEY is not set in environment!');
-    return null;
-  }
-
-  try {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-2-preview:embedContent?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: 'models/gemini-embedding-2-preview',
-          content: { parts: [{ text }] },
-          taskType: 'RETRIEVAL_DOCUMENT',
-          outputDimensionality: 768,
-        }),
-      }
-    );
-    if (!res.ok) {
-      const errText = await res.text();
-      console.error('Gemini embedContent error:', res.status, errText);
-      return null;
-    }
-    const data = await res.json();
-    return data.embedding?.values || null;
-  } catch (err) {
-    console.error('Gemini embed exception:', err);
-    return null;
-  }
-}
-
-// Simple text chunker for the API route
-function chunkDocument(text: string, maxTokens: number = 400, overlapTokens: number = 50): string[] {
-  const words = text.split(/\s+/).filter(Boolean);
-  if (words.length <= maxTokens) return [text];
-
-  const chunks: string[] = [];
-  let i = 0;
-  while (i < words.length) {
-    const end = Math.min(i + maxTokens, words.length);
-    const slice = words.slice(i, end).join(' ');
-    if (slice.trim()) chunks.push(slice.trim());
-    if (end >= words.length) break;
-    i += maxTokens - overlapTokens;
-  }
-  return chunks;
-}
 
 // GET: Actions (list_projects, list_github_repos)
 export async function GET(req: NextRequest) {
@@ -180,18 +129,79 @@ export async function GET(req: NextRequest) {
   }
 }
 
-// POST: Ingest from GitHub or Modrinth URL
+// POST: Ingest or sync project from GitHub / Modrinth, or register webhook
 export async function POST(req: NextRequest) {
   try {
-    const supabase = getSupabaseServer();
     const body = await req.json();
+
+    // Sub-action: Automatically create GitHub Webhook on a repository
+    if (body.action === 'create_webhook') {
+      const { repo, github_token, webhook_url, secret } = body;
+      const ghToken = github_token || process.env.GITHUB_TOKEN;
+
+      if (!ghToken) {
+        return NextResponse.json(
+          { success: false, error: 'A GitHub Personal Access Token (PAT) with repo/admin:repo_hook permissions is required to register webhooks.' },
+          { status: 400 }
+        );
+      }
+
+      if (!repo || !webhook_url) {
+        return NextResponse.json(
+          { success: false, error: 'Repository name and webhook URL are required.' },
+          { status: 400 }
+        );
+      }
+
+      const cleanRepo = repo.replace(/^https?:\/\/github\.com\//i, '').replace(/\/$/, '');
+
+      const hookRes = await fetch(`https://api.github.com/repos/${cleanRepo}/hooks`, {
+        method: 'POST',
+        headers: {
+          Accept: 'application/vnd.github.v3+json',
+          Authorization: `Bearer ${ghToken}`,
+          'User-Agent': 'DiscordBot-RAG-Dashboard',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          name: 'web',
+          active: true,
+          events: ['push', 'release'],
+          config: {
+            url: webhook_url,
+            content_type: 'json',
+            secret: secret || process.env.GITHUB_WEBHOOK_SECRET || '',
+            insecure_ssl: '0',
+          },
+        }),
+      });
+
+      const hookData = await hookRes.json();
+      if (!hookRes.ok) {
+        // If webhook already exists, return friendly message
+        if (hookData.errors?.some((e: any) => e.message?.includes('Hook already exists'))) {
+          return NextResponse.json({
+            success: true,
+            already_exists: true,
+            message: `Webhook is already active on ${cleanRepo}! Pushes will automatically sync.`,
+          });
+        }
+        return NextResponse.json(
+          { success: false, error: hookData.message || 'Failed to create webhook on GitHub.' },
+          { status: hookRes.status }
+        );
+      }
+
+      return NextResponse.json({
+        success: true,
+        message: `Successfully connected live webhook to ${cleanRepo}! Every git push will auto-update bot memory.`,
+        hook_id: hookData.id,
+      });
+    }
+
+    // Default: Ingest or Dynamic Sync
     let { url, target, is_private = false, github_token } = body;
     const input = (url || target || '').trim();
-
-    const ghToken =
-      github_token ||
-      req.headers.get('x-github-token') ||
-      process.env.GITHUB_TOKEN;
 
     if (!input) {
       return NextResponse.json(
@@ -200,242 +210,25 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const isModrinth = input.includes('modrinth.com') || body.source === 'modrinth';
-    const isGitHub = input.includes('github.com') || body.source === 'github' || (!isModrinth && input.includes('/'));
+    const ghToken =
+      github_token ||
+      req.headers.get('x-github-token') ||
+      process.env.GITHUB_TOKEN;
 
-    let projectName = '';
-    let sourceType: 'github' | 'modrinth' = 'github';
-    const documentsToIndex: Array<{ title: string; content: string; version?: string }> = [];
+    const result = await syncProject({
+      target: input,
+      source: body.source,
+      isPrivate: Boolean(is_private),
+      githubToken: ghToken,
+    });
 
-    // ==========================================
-    // GITHUB INGESTION
-    // ==========================================
-    if (isGitHub) {
-      sourceType = 'github';
-      const cleanRepo = input
-        .replace(/^https?:\/\/github\.com\//i, '')
-        .replace(/\/$/, '');
-      projectName = cleanRepo.toLowerCase();
-
-      const apiHeaders: Record<string, string> = {
-        Accept: 'application/vnd.github.v3+json',
-        'User-Agent': 'DiscordBot-RAG-Dashboard',
-      };
-      if (ghToken) {
-        apiHeaders.Authorization = `Bearer ${ghToken}`;
-      }
-
-      // 1. Fetch releases
-      try {
-        const relRes = await fetch(
-          `https://api.github.com/repos/${cleanRepo}/releases?per_page=5`,
-          { headers: apiHeaders }
-        );
-
-        if (relRes.ok) {
-          const releases = await relRes.json();
-          for (const rel of releases) {
-            const version = rel.tag_name || rel.name || 'v1.0';
-            const bodyText = (rel.body || '').trim();
-            if (bodyText) {
-              documentsToIndex.push({
-                title: `${cleanRepo} Release ${rel.name || version}`,
-                version,
-                content: `# ${cleanRepo} - Release ${rel.name || version}\nPublished: ${rel.published_at}\n\n${bodyText}`,
-              });
-            }
-          }
-        }
-      } catch (err) {
-        console.warn('Could not fetch releases:', err);
-      }
-
-      // 2. Comprehensive Documentation Scan (All .md files, DOCUMENTATION.md, plugin.yml via Git Trees API)
-      try {
-        let treeData: any = null;
-        let defaultBranch = 'main';
-
-        for (const branch of ['main', 'master']) {
-          const treeRes = await fetch(
-            `https://api.github.com/repos/${cleanRepo}/git/trees/${branch}?recursive=1`,
-            { headers: apiHeaders }
-          );
-          if (treeRes.ok) {
-            treeData = await treeRes.json();
-            defaultBranch = branch;
-            break;
-          }
-        }
-
-        if (treeData && Array.isArray(treeData.tree)) {
-          // Filter all markdown documentation and plugin manifests
-          const docFiles = treeData.tree.filter((f: any) =>
-            f.type === 'blob' &&
-            (f.path.endsWith('.md') ||
-             f.path.endsWith('.markdown') ||
-             f.path.endsWith('plugin.yml') ||
-             f.path.endsWith('config.yml'))
-          );
-
-          console.log(`[Ingest] Discovered ${docFiles.length} documentation file(s) in ${cleanRepo}:`, docFiles.map((f: any) => f.path));
-
-          // Fetch each doc file (limit to top 20 to stay within rate limits)
-          for (const file of docFiles.slice(0, 20)) {
-            try {
-              const rawUrl = `https://raw.githubusercontent.com/${cleanRepo}/${defaultBranch}/${file.path}`;
-              const fileRes = await fetch(rawUrl, {
-                headers: ghToken ? { Authorization: `Bearer ${ghToken}` } : {},
-              });
-
-              if (fileRes.ok) {
-                const content = await fileRes.text();
-                if (content && content.trim().length > 20) {
-                  const isPluginYml = file.path.endsWith('plugin.yml');
-                  const docTitle = isPluginYml
-                    ? `${cleanRepo} Commands & Permissions Manifest (${file.path})`
-                    : `${cleanRepo} - ${file.path}`;
-
-                  documentsToIndex.push({
-                    title: docTitle,
-                    version: defaultBranch,
-                    content: `# ${cleanRepo}: ${file.path}\n\n${content}`,
-                  });
-                }
-              }
-            } catch (fileErr) {
-              console.warn(`Could not fetch ${file.path}:`, fileErr);
-            }
-          }
-        } else {
-          // Fallback if Tree API fails: Fetch README.md directly
-          const readmeRes = await fetch(
-            `https://api.github.com/repos/${cleanRepo}/readme`,
-            { headers: { ...apiHeaders, Accept: 'application/vnd.github.raw' } }
-          );
-          if (readmeRes.ok) {
-            const readmeText = await readmeRes.text();
-            if (readmeText && readmeText.trim()) {
-              documentsToIndex.push({
-                title: `${cleanRepo} README & Documentation`,
-                version: 'main',
-                content: `# ${cleanRepo} Documentation\n\n${readmeText}`,
-              });
-            }
-          }
-        }
-      } catch (err) {
-        console.warn('Documentation scan error:', err);
-      }
-
-      if (documentsToIndex.length === 0) {
-        return NextResponse.json(
-          {
-            success: false,
-            error: `Could not retrieve documentation or releases from GitHub repo: ${cleanRepo}. Please check repo privacy or URL.`,
-          },
-          { status: 404 }
-        );
-      }
-    }
-
-    // ==========================================
-    // MODRINTH INGESTION
-    // ==========================================
-    if (isModrinth) {
-      sourceType = 'modrinth';
-      let slug = input
-        .replace(/^https?:\/\/modrinth\.com\/(mod|plugin|datapack|project)\//i, '')
-        .replace(/\/$/, '')
-        .trim();
-      projectName = slug.toLowerCase();
-
-      // Fetch project metadata & body
-      const projRes = await fetch(`https://api.modrinth.com/v2/project/${slug}`, {
-        headers: { 'User-Agent': 'DiscordBot-RAG-Dashboard' },
-      });
-
-      if (!projRes.ok) {
-        return NextResponse.json(
-          { success: false, error: `Modrinth project not found: ${slug}` },
-          { status: 404 }
-        );
-      }
-
-      const projData = await projRes.json();
-      if (projData.body) {
-        documentsToIndex.push({
-          title: `${projData.title} Overview & Docs`,
-          version: 'latest',
-          content: `# ${projData.title}\nDescription: ${projData.description}\n\n${projData.body}`,
-        });
-      }
-
-      // Fetch latest version changelogs
-      try {
-        const verRes = await fetch(`https://api.modrinth.com/v2/project/${slug}/version`, {
-          headers: { 'User-Agent': 'DiscordBot-RAG-Dashboard' },
-        });
-        if (verRes.ok) {
-          const versions = await verRes.json();
-          for (const ver of versions.slice(0, 4)) {
-            if (ver.changelog) {
-              documentsToIndex.push({
-                title: `${projData.title} Version ${ver.version_number}`,
-                version: ver.version_number,
-                content: `# ${projData.title} Changelog v${ver.version_number}\n\n${ver.changelog}`,
-              });
-            }
-          }
-        }
-      } catch (err) {
-        console.warn('Modrinth versions fetch warning:', err);
-      }
-    }
-
-    // ==========================================
-    // CHUNK, EMBED, AND SAVE INTO SUPABASE
-    // ==========================================
-    let totalChunksCreated = 0;
-
-    for (const doc of documentsToIndex) {
-      const chunks = chunkDocument(doc.content, 400, 50);
-
-      for (let i = 0; i < chunks.length; i++) {
-        const chunkText = chunks[i];
-        const embedding = await getDocumentEmbedding(chunkText);
-
-        if (!embedding) {
-          console.error(`[Ingest] Failed to generate 768-dim embedding for chunk ${i} of ${projectName}`);
-          continue;
-        }
-
-        const { error: insErr } = await supabase.from('knowledge_chunks').insert({
-          project_name: projectName,
-          source_type: sourceType,
-          content: chunkText,
-          metadata: {
-            title: doc.title,
-            version: doc.version || '1.0.0',
-            chunk_index: i,
-            ingested_at: new Date().toISOString(),
-          },
-          is_private: Boolean(is_private),
-          embedding,
-        });
-
-        if (insErr) {
-          console.error(`[Ingest] Supabase insert error for chunk ${i}:`, insErr.message);
-        } else {
-          totalChunksCreated++;
-        }
-      }
-    }
-
-    if (totalChunksCreated === 0) {
+    if (!result.success) {
       return NextResponse.json(
         {
           success: false,
-          error: `Failed to create embeddings or insert chunks for ${projectName}. Check Supabase vector connection or Gemini API key.`,
+          error:
+            result.error ||
+            `Failed to create embeddings or insert chunks for ${result.project}. Check Supabase vector connection or Gemini API key.`,
         },
         { status: 500 }
       );
@@ -443,11 +236,11 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      project: projectName,
-      source: sourceType,
-      documents_parsed: documentsToIndex.length,
-      chunks_created: totalChunksCreated,
-      message: `Successfully ingested ${totalChunksCreated} chunks from ${projectName}`,
+      project: result.project,
+      source: result.source,
+      documents_parsed: result.documentsParsed,
+      chunks_created: result.chunksCreated,
+      message: `Successfully synced ${result.chunksCreated} chunks across ${result.documentsParsed} document(s) from ${result.project}`,
     });
   } catch (err: any) {
     console.error('Ingest error:', err);
