@@ -45,7 +45,9 @@ import {
   Sliders,
   Sparkles,
   Terminal,
+  Ticket,
   Trash2,
+  Trophy,
   UploadCloud,
   User,
   Users,
@@ -53,6 +55,11 @@ import {
   Wand2,
   Zap,
 } from 'lucide-react';
+import SecurityConsole from '@/components/SecurityConsole';
+import VoiceMasterStudio from '@/components/VoiceMasterStudio';
+import TicketCenter from '@/components/TicketCenter';
+import LevelingPanel from '@/components/LevelingPanel';
+import BroadcastPanel from '@/components/BroadcastPanel';
 
 interface Stats {
   totalChunks: number;
@@ -178,7 +185,17 @@ interface ChatMessage {
 export default function Dashboard() {
   // Navigation
   const [activeTab, setActiveTab] = useState<
-    'telemetry' | 'knowledge' | 'simulator' | 'matrix' | 'prompt' | 'logs'
+    | 'telemetry'
+    | 'knowledge'
+    | 'simulator'
+    | 'matrix'
+    | 'prompt'
+    | 'logs'
+    | 'security'
+    | 'voicemaster'
+    | 'tickets'
+    | 'leveling'
+    | 'broadcasts'
   >('telemetry');
 
   // Core Data
@@ -883,6 +900,84 @@ export default function Dashboard() {
 
           <div>
             <div className="px-2 py-1 text-[10px] font-mono uppercase tracking-wider text-[#606675]">
+              Enterprise Fleet Modules
+            </div>
+            <div className="space-y-0.5 mt-0.5">
+              <button
+                onClick={() => setActiveTab('security')}
+                className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded transition-all ${
+                  activeTab === 'security'
+                    ? 'bg-[#1A1D24] text-white border border-[#2E3340]'
+                    : 'text-[#949AA8] hover:text-[#EDEDED] hover:bg-[#14161C]'
+                }`}
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <ShieldAlert className="w-3.5 h-3.5 text-red-400 shrink-0" />
+                  <span className="truncate">Sentinel (Anti-Nuke)</span>
+                </div>
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+              </button>
+
+              <button
+                onClick={() => setActiveTab('voicemaster')}
+                className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded transition-all ${
+                  activeTab === 'voicemaster'
+                    ? 'bg-[#1A1D24] text-white border border-[#2E3340]'
+                    : 'text-[#949AA8] hover:text-[#EDEDED] hover:bg-[#14161C]'
+                }`}
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <Volume2 className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+                  <span className="truncate">VoiceMaster Hubs</span>
+                </div>
+              </button>
+
+              <button
+                onClick={() => setActiveTab('tickets')}
+                className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded transition-all ${
+                  activeTab === 'tickets'
+                    ? 'bg-[#1A1D24] text-white border border-[#2E3340]'
+                    : 'text-[#949AA8] hover:text-[#EDEDED] hover:bg-[#14161C]'
+                }`}
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <Ticket className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                  <span className="truncate">Ticket Center</span>
+                </div>
+              </button>
+
+              <button
+                onClick={() => setActiveTab('leveling')}
+                className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded transition-all ${
+                  activeTab === 'leveling'
+                    ? 'bg-[#1A1D24] text-white border border-[#2E3340]'
+                    : 'text-[#949AA8] hover:text-[#EDEDED] hover:bg-[#14161C]'
+                }`}
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <Trophy className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                  <span className="truncate">Leveling & XP</span>
+                </div>
+              </button>
+
+              <button
+                onClick={() => setActiveTab('broadcasts')}
+                className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded transition-all ${
+                  activeTab === 'broadcasts'
+                    ? 'bg-[#1A1D24] text-white border border-[#2E3340]'
+                    : 'text-[#949AA8] hover:text-[#EDEDED] hover:bg-[#14161C]'
+                }`}
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <Radio className="w-3.5 h-3.5 text-red-400 shrink-0" />
+                  <span className="truncate">Broadcast Feeds</span>
+                </div>
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <div className="px-2 py-1 text-[10px] font-mono uppercase tracking-wider text-[#606675]">
               Server & Permissions
             </div>
             <div className="space-y-0.5 mt-0.5">
@@ -978,6 +1073,11 @@ export default function Dashboard() {
               {activeTab === 'matrix' && 'policy-matrix'}
               {activeTab === 'prompt' && 'prompt-engine'}
               {activeTab === 'logs' && 'audit-logs'}
+              {activeTab === 'security' && 'sentinel-shield'}
+              {activeTab === 'voicemaster' && 'voicemaster-studio'}
+              {activeTab === 'tickets' && 'ticket-center'}
+              {activeTab === 'leveling' && 'leveling-activity'}
+              {activeTab === 'broadcasts' && 'broadcast-feeds'}
             </span>
             <span className="ml-2 font-mono text-[10px] px-2 py-0.5 rounded bg-[#15181E] border border-[#242833] text-[#949AA8]">
               #faq (1455668527594868737)
@@ -2298,6 +2398,41 @@ export default function Dashboard() {
                   </table>
                 )}
               </div>
+            </div>
+          )}
+
+          {/* TAB: SENTINEL SHIELD */}
+          {activeTab === 'security' && (
+            <div className="animate-in fade-in duration-200">
+              <SecurityConsole showToast={showToast} />
+            </div>
+          )}
+
+          {/* TAB: VOICEMASTER STUDIO */}
+          {activeTab === 'voicemaster' && (
+            <div className="animate-in fade-in duration-200">
+              <VoiceMasterStudio showToast={showToast} />
+            </div>
+          )}
+
+          {/* TAB: TICKET CENTER */}
+          {activeTab === 'tickets' && (
+            <div className="animate-in fade-in duration-200">
+              <TicketCenter showToast={showToast} />
+            </div>
+          )}
+
+          {/* TAB: LEVELING & LEADERBOARD */}
+          {activeTab === 'leveling' && (
+            <div className="animate-in fade-in duration-200">
+              <LevelingPanel showToast={showToast} />
+            </div>
+          )}
+
+          {/* TAB: BROADCAST FEEDS */}
+          {activeTab === 'broadcasts' && (
+            <div className="animate-in fade-in duration-200">
+              <BroadcastPanel showToast={showToast} />
             </div>
           )}
         </main>
