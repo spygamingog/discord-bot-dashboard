@@ -31,6 +31,7 @@ import {
   Lock,
   MessageSquare,
   Network,
+  Palette,
   Play,
   Plus,
   Radio,
@@ -60,6 +61,7 @@ import VoiceMasterStudio from '@/components/VoiceMasterStudio';
 import TicketCenter from '@/components/TicketCenter';
 import LevelingPanel from '@/components/LevelingPanel';
 import BroadcastPanel from '@/components/BroadcastPanel';
+import EmbedStudio from '@/components/EmbedStudio';
 
 interface Stats {
   totalChunks: number;
@@ -196,6 +198,7 @@ export default function Dashboard() {
     | 'tickets'
     | 'leveling'
     | 'broadcasts'
+    | 'embeds'
   >('telemetry');
 
   // Core Data
@@ -1016,6 +1019,23 @@ export default function Dashboard() {
               </button>
 
               <button
+                onClick={() => setActiveTab('embeds')}
+                className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded transition-all ${
+                  activeTab === 'embeds'
+                    ? 'bg-[#1A1D24] text-white border border-[#2E3340]'
+                    : 'text-[#949AA8] hover:text-[#EDEDED] hover:bg-[#14161C]'
+                }`}
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <Palette className="w-3.5 h-3.5 text-pink-400 shrink-0" />
+                  <span className="truncate">Embed & Message Studio</span>
+                </div>
+                <span className="px-1.5 py-0.2 rounded bg-pink-500/10 text-pink-400 text-[9px] font-bold border border-pink-500/30">
+                  PRO
+                </span>
+              </button>
+
+              <button
                 onClick={() => setActiveTab('logs')}
                 className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded transition-all ${
                   activeTab === 'logs'
@@ -1078,6 +1098,7 @@ export default function Dashboard() {
               {activeTab === 'tickets' && 'ticket-center'}
               {activeTab === 'leveling' && 'leveling-activity'}
               {activeTab === 'broadcasts' && 'broadcast-feeds'}
+              {activeTab === 'embeds' && 'embed-design-studio'}
             </span>
             <span className="ml-2 font-mono text-[10px] px-2 py-0.5 rounded bg-[#15181E] border border-[#242833] text-[#949AA8]">
               #faq (1455668527594868737)
@@ -2433,6 +2454,13 @@ export default function Dashboard() {
           {activeTab === 'broadcasts' && (
             <div className="animate-in fade-in duration-200">
               <BroadcastPanel showToast={showToast} />
+            </div>
+          )}
+
+          {/* TAB: EMBED & MESSAGE STUDIO */}
+          {activeTab === 'embeds' && (
+            <div className="animate-in fade-in duration-200">
+              <EmbedStudio showToast={showToast} />
             </div>
           )}
         </main>
